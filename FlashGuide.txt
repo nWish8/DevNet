@@ -1,0 +1,60 @@
+Sure! Here's a detailed, step-by-step guide for flashing MicroPython firmware to ESP32 boards using esptool, customized with the paths you're using:
+
+Step-by-Step Guide for Flashing MicroPython on ESP32
+1. Install Required Tools
+Ensure you have esptool installed inside your virtual environment. You've already done this, but for future boards, if needed:
+
+bash
+Copy code
+pip install esptool
+2. Erase Flash on the ESP32
+Each time you flash a new ESP32 board, it’s good practice to first erase the flash memory:
+
+bash
+Copy code
+esptool --chip esp32 --port COM15 --baud 115200 erase_flash
+Replace COM15 with the actual COM port your ESP32 is connected to.
+This will clear any existing firmware and settings on the ESP32.
+3. Download MicroPython Firmware
+Make sure you've downloaded the MicroPython firmware. In your case, the firmware is already at:
+
+bash
+Copy code
+D:\Uni\Skripsie\Firmware\ESP32_GENERIC-20240602-v1.23.0.bin
+If needed for future boards, you can always get the latest MicroPython firmware for ESP32 from the official site: MicroPython Download Page.
+
+4. Flash MicroPython Firmware
+Once the flash is erased, proceed to flash the MicroPython firmware. Use the following command:
+
+bash
+Copy code
+esptool --chip esp32 --port COM15 --baud 115200 write_flash -z 0x1000 D:\Uni\Skripsie\Firmware\ESP32_GENERIC-20240602-v1.23.0.bin
+Replace COM15 with the COM port of the new ESP32 board you are working with.
+The path to the firmware should remain the same as long as you are using the same .bin file.
+0x1000 is the starting address where the firmware should be written on the flash.
+5. Hard Reset the ESP32
+After the firmware is flashed, the ESP32 will automatically reset via the RTS pin. If it doesn’t, you can manually reset the board by pressing the EN (reset) button.
+
+6. Access MicroPython REPL
+Once the board is flashed with MicroPython, you can access the REPL to interact with the board directly using Python. Here’s how you can do it:
+
+For Windows (Using PuTTY):
+
+Open PuTTY.
+Set the COM port to COM15 and the baud rate to 115200.
+Click Open, and you should see the >>> prompt.
+For Linux/macOS (Using Screen):
+
+Open a terminal and use the following command:
+bash
+Copy code
+screen /dev/ttyUSB0 115200
+Replace /dev/ttyUSB0 with your ESP32's port.
+Press CTRL + A, then CTRL + D to exit.
+Alternatively, you can use an IDE like Thonny or uPyCraft that provides easy access to the REPL.
+
+7. Repeat for Other Boards
+For each new ESP32 board, repeat the process:
+
+Change the COM port in the commands to reflect the new board.
+Follow the same steps to erase the flash and write the firmware.
