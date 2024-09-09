@@ -1,7 +1,7 @@
 {
     "python.autoComplete.extraPaths": [
-        ".micropy\\micropython_esp32_stubs-1.20.0.post5",
         ".micropy\\micropython_stdlib_stubs-1.1.2\\stdlib",
+        ".micropy\\micropython_esp32_stubs-1.20.0.post5",
         ".micropy\\BradenM-micropy-stubs-4f5a52a\\frozen",
         ".micropy\\DevNet"
     ],
@@ -10,8 +10,8 @@
     },
     "python.analysis.typeCheckingMode": "basic",
     "python.analysis.typeshedPaths": [
-        ".micropy\\micropython_esp32_stubs-1.20.0.post5",
         ".micropy\\micropython_stdlib_stubs-1.1.2\\stdlib",
+        ".micropy\\micropython_esp32_stubs-1.20.0.post5",
         ".micropy\\BradenM-micropy-stubs-4f5a52a\\frozen",
         ".micropy\\DevNet",
         "typings"
@@ -25,8 +25,8 @@
     "python.languageServer": "Pylance",
     "python.analysis.autoSearchPath": true,
     "python.autoComplete.typeshedPaths": [
-        ".micropy\\micropython_esp32_stubs-1.20.0.post5",
         ".micropy\\micropython_stdlib_stubs-1.1.2\\stdlib",
+        ".micropy\\micropython_esp32_stubs-1.20.0.post5",
         ".micropy\\BradenM-micropy-stubs-4f5a52a\\frozen",
         ".micropy\\DevNet",
         "typings"
