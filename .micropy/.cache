@@ -1,0 +1,8 @@
+{
+    "dev-packages": [
+        "ampy",
+        "micropy-cli",
+        "esptool"
+    ],
+    "packages": []
+}

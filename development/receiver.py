@@ -1,7 +1,7 @@
 # receiver.py
 
 import network
-import espnow
+import espnow # type: ignore
 import machine
 
 def run():

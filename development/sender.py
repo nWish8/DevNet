@@ -1,7 +1,7 @@
 # sender.py
 
 import network
-import espnow
+import espnow # type: ignore
 import utime
 from machine import Pin
 

@@ -1,5 +1,5 @@
 # main.py on receiver
-import receiver
+import node
 
 # Call the receiver logic from receiver.py
-receiver.run()
+node.run()
