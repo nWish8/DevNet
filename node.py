@@ -254,9 +254,6 @@ class MyNode():
         except OSError as e:
             print(f"Error adding peer {mac_bytes}: {e}")
 
-
-        self.esp.add_peer(mac_bytes)
-
         self.neighbor_table[sender] = {     # Update the neighbor table
             'pos': data['pos'],                 # Store the position
             'rssi': data['rssi'],               # Store the RSSI
