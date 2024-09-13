@@ -94,7 +94,6 @@ class MyNode():
 
         utime.sleep(randdelay())  # Random delay to simulate network latency
 
-        
         try:
             self.esp.send(self.broadcast_mac, json_data)
             self.log(f"SENT: DREQ from {self.id}")
