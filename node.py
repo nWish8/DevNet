@@ -93,9 +93,9 @@ class MyNode():
         utime.sleep(randdelay())  # Random delay to simulate network latency
 
         
-        self.log(f"SEND: DREQ from {self.id}")
         try:
             self.esp.send(self.broadcast_mac, json_data)
+            self.log(f"SENT: DREQ from {self.id}")
         except Exception as e:
             self.log(f"Error Sending message: {str(e)}")
 
@@ -114,7 +114,6 @@ class MyNode():
 
         # wait for a random delay then send the data packet
         utime.sleep(randdelay())
-        self.log(f"SEND: DREP to {self.path}")
         self.esp.send(mac_bytes, json_data)
         self.log(f"SENT: DREP to {self.path}")
 
