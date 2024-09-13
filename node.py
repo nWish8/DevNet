@@ -27,6 +27,9 @@ class MyNode():
         '''
         Initialize the node.
         '''
+        # Initialize the LED pin
+        self.led_pin = machine.Pin(23, machine.Pin.OUT)
+
         # Sender logic
         self.sta = network.WLAN(network.STA_IF)
         self.sta.active(True)
@@ -40,7 +43,7 @@ class MyNode():
         self.broadcast_mac = b'\xff\xff\xff\xff\xff\xff'
         self.esp.add_peer(self.broadcast_mac)
 
-        # Set self.id to the MAC address in human-readable format
+        # Set self.id to the MAC address in readable format
         self.id = ':'.join(f'{b:02x}' for b in self.sta.config('mac'))
 
         self.pos = (random.randint(0, 10), random.randint(0, 10))  # TODO: Pull GPS data
@@ -48,7 +51,6 @@ class MyNode():
         self.start_dreq = True
         self.txCounter = 0
         self.neighbor_table = {}  # Dictionary to store neighbors their overheads and path
-        self.rssi = 0
         self.overhead = 1
         self.path = GATEWAY  # Path to the gateway
         self.clk_offset = 0  # Clock offset for synchronization
@@ -64,7 +66,7 @@ class MyNode():
             if self.id == GATEWAY and self.start_dreq:
                 self.log(f"STARTING...")
                 utime.sleep(1)
-                self.send_dreq(self.txCounter, self.pos, self.rssi, self.overhead, self.path, self.now)
+                self.send_dreq(self.txCounter, self.pos, self.overhead, self.path, self.now)
                 self.start_dreq = False
             
             # Listen for tx
@@ -82,12 +84,12 @@ class MyNode():
             self.start_reply()
 
     ###################
-    def send_dreq(self, txCounter, pos, rssi, overhead, path, clk):
+    def send_dreq(self, txCounter, pos, overhead, path, clk):
         '''
         Send a Data Request (DREQ) message to broadcast address
         '''
         
-        data = {'msg': 'dreq', 'txCounter': txCounter, 'pos': pos, 'rssi': rssi, 'overhead': overhead, 'path': path, 'clk': clk}
+        data = {'msg': 'dreq', 'txCounter': txCounter, 'pos': pos, 'overhead': overhead, 'path': path, 'clk': clk}
         json_data = json.dumps(data).encode('utf-8')  # Encode data to JSON
 
         utime.sleep(randdelay())  # Random delay to simulate network latency
@@ -112,10 +114,20 @@ class MyNode():
             self.path = str(self.path)
         mac_bytes = bytes(int(b, 16) for b in self.path.split(':'))
 
+        # Blink the LED to indicate data transmission
+        self.led_pin.on()
+        utime.sleep_ms(250)
+        self.led_pin.off()
+        utime.sleep_ms(250)
+        self.led_pin.on()
+        utime.sleep_ms(250)
+        self.led_pin.off()
+
         # wait for a random delay then send the data packet
         utime.sleep(randdelay())
         self.esp.send(mac_bytes, json_data)
         self.log(f"SENT: DREP to {self.path}")
+
 
     ###################
     def on_receive(self, sender, msg, data):
@@ -132,7 +144,7 @@ class MyNode():
                     self.path = sender  # Update self.path
 
                     utime.sleep(randdelay())
-                    self.send_dreq(self.txCounter, self.pos, self.rssi, self.overhead, self.path, self.now)  # Forward the DREQ message
+                    self.send_dreq(self.txCounter, self.pos, self.overhead, self.path, self.now)  # Forward the DREQ message
                 self.strt_flag = True  # Set the start flag to True
 
             if self.neighbor_table:  # Node has received a DREQ message before
@@ -146,7 +158,7 @@ class MyNode():
                             self.path = sender  # Update self.path
 
                             utime.sleep(randdelay())
-                            self.send_dreq(self.txCounter, self.pos, self.rssi, self.overhead, self.path, self.now)  # Forward the DREQ message
+                            self.send_dreq(self.txCounter, self.pos, self.overhead, self.path, self.now)  # Forward the DREQ message
                         self.strt_flag = True
 
         elif msg == 'dreply':
@@ -169,10 +181,12 @@ class MyNode():
 
                 else:  # Data has reached the gateway
                     self.log(f"RECEIVED data from connected nodes")
+                    self.led_pin.on()
                     self.log(self.format_data_cache())
 
-                    utime.sleep(20)
+                    utime.sleep(10)
                     self.log(f"COMPLETE")
+                    self.led_pin.off()
                     self.start_dreq = True
                     self.txCounter += 1
                     self.neighbor_table = {} # Reset the Gateway neighbor table
@@ -228,7 +242,6 @@ class MyNode():
         if data['txCounter'] != self.txCounter:
             self.txCounter = data['txCounter']
             self.neighbor_table = {}
-            self.rssi = 0
             self.overhead = 1
             self.path = GATEWAY
             self.strt_flag = False
@@ -247,18 +260,19 @@ class MyNode():
             self.esp.del_peer(mac_bytes)  # Delete the peer if it exists
         except OSError:
             pass  # Ignore if peer doesn't exist
-
         try:
             self.esp.add_peer(mac_bytes)  # Add the peer
         except OSError as e:
             print(f"Error adding peer {mac_bytes}: {e}")
 
-        self.neighbor_table[sender] = {     # Update the neighbor table
-            'pos': data['pos'],                 # Store the position
-            'rssi': data['rssi'],               # Store the RSSI
-            'overhead': data['overhead'],       # Store the overhead
-            'path': data['path'],               # Store the path
-            'rx': 0                             # Store the number of packets received
+        self.log(self.esp.peers_table[mac_bytes][0])
+
+        self.neighbor_table[sender] = {             # Update the neighbor table
+            'pos': data['pos'],                         # Store the position
+            'rssi': self.esp.peers_table[mac_bytes][0], # Store the RSSI
+            'overhead': data['overhead'],               # Store the overhead
+            'path': data['path'],                       # Store the path
+            'rx': 0                                     # Store the number of packets received
         }
 
 
@@ -285,13 +299,15 @@ class MyNode():
         Returns a formatted string representation of the data cache with aligned columns.
         '''
         formatted_cache = []
-        header = f"Tx:{self.txCounter} DATA:\n{'Time':<11}{'Node_ID':<20}{'Pos':<12}{'Temp(°C)':<10}{'Hum(%)':<10}"
+        header = f"Tx:{self.txCounter} DATA:\n{'Time':<11}{'Node_ID':<20}{'Pos':<12}{'Temp':<8}{'Hum':<8}"
         formatted_cache.append(header)
-        formatted_cache.append('-' * 70)  # Divider line for better readability
+        formatted_cache.append('-' * 70)  # Divider line
 
         for node_id, data in self.dataCache.items():
-            formatted_data = f"{data['time']:<11.4f}{node_id:<20}{str(data['pos']):<12}{data['temp']:<10}{data['hum']:<10}"
+            formatted_data = f"{data['time']:<11f}{node_id:<20}{str(data['pos']):<12}{data['temp']:<8}{data['hum']:<8}"
             formatted_cache.append(formatted_data)
+
+        formatted_cache.append('-' * 70)  # Divider line
 
         return "\n".join(formatted_cache)
 
