@@ -379,27 +379,27 @@ class MyNode():
                 except Exception as e:
                     self.log(f"Error parsing GNGGA: {str(e)}")
 
-            elif sentence.startswith('$GNRMC'):
-                # Parse $GNRMC sentence for latitude and longitude
-                try:
-                    parts = sentence.split(',')
-                    latitude = self.convert_to_degrees(parts[3], parts[4])
-                    longitude = self.convert_to_degrees(parts[5], parts[6])
-                    fix_status = parts[2]  # A = Valid, V = Invalid
-                    self.log(f"GNRMC - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
-                except Exception as e:
-                    self.log(f"Error parsing GNRMC: {str(e)}")
+            # elif sentence.startswith('$GNRMC'):
+            #     # Parse $GNRMC sentence for latitude and longitude
+            #     try:
+            #         parts = sentence.split(',')
+            #         latitude = self.convert_to_degrees(parts[3], parts[4])
+            #         longitude = self.convert_to_degrees(parts[5], parts[6])
+            #         fix_status = parts[2]  # A = Valid, V = Invalid
+            #         self.log(f"GNRMC - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
+            #     except Exception as e:
+            #         self.log(f"Error parsing GNRMC: {str(e)}")
 
-            elif sentence.startswith('$GNGLL'):
-                # Parse $GNGLL sentence for latitude and longitude
-                try:
-                    parts = sentence.split(',')
-                    latitude = self.convert_to_degrees(parts[1], parts[2])
-                    longitude = self.convert_to_degrees(parts[3], parts[4])
-                    fix_status = parts[6]  # A = Valid, V = Invalid
-                    self.log(f"GNGLL - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
-                except Exception as e:
-                    self.log(f"Error parsing GNGLL: {str(e)}")
+            # elif sentence.startswith('$GNGLL'):
+            #     # Parse $GNGLL sentence for latitude and longitude
+            #     try:
+            #         parts = sentence.split(',')
+            #         latitude = self.convert_to_degrees(parts[1], parts[2])
+            #         longitude = self.convert_to_degrees(parts[3], parts[4])
+            #         fix_status = parts[6]  # A = Valid, V = Invalid
+            #         self.log(f"GNGLL - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
+            #     except Exception as e:
+            #         self.log(f"Error parsing GNGLL: {str(e)}")
 
         # Use the data if a valid fix is available
         if fix_status in ['1', 'A']:  # Check if the fix is valid
@@ -433,7 +433,7 @@ class MyNode():
 
     ############################
     def log(self, msg):
-        print(f"Node {'#'+str(self.id):4}[{self.now:10.5f}] {msg}")
+        print(f"Node {str(self.id):4}[{self.now:10}] {msg}")
 
     ############################
     def format_data_cache(self):
@@ -444,8 +444,8 @@ class MyNode():
         header = (
             f"Tx:{self.txCounter} DATA:\n"+
             f"{'Time':<8}"+
-            f"{'Node_ID':<8}"+
-            f"{'Pos':<10}"+
+            f"{'MAC':<6}"+
+            f"{'Pos':<22}"+
             f"{'Temp':<8}"+
             f"{'Hum':<8}"+
             f"{'Pressure':<12}"+
@@ -458,8 +458,8 @@ class MyNode():
         for node_id, data in self.dataCache.items():
             formatted_data = (
                 f"{data['time']:<8}"+
-                f"{node_id[12:]:<8}"+
-                f"{str(data['pos']):<10}"+
+                f"{node_id[12:]:<6}"+
+                f"{str(data['pos']):<22}"+
                 f"{data['temp']:<8}"+
                 f"{data['hum']:<8}"+
                 f"{data['pressure']:<12}"+
