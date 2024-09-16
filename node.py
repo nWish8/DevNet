@@ -1,13 +1,14 @@
 import network
 import espnow  # type: ignore
 import utime
-import machine
 import random
 import json
+from machine import SoftI2C, Pin, UART
+import BME280
 
 GATEWAY = 'e8:31:cd:70:f1:6c'  # Gateway MAC address
-INTERVAL = 20  # Interval for sending DREQ messages
-DELAY = 2 # Delay for sending DREP messages
+INTERVAL = 10  # Interval for sending DREQ messages
+DELAY = 2 # Delay for reading GPS data
 WEIGHT = 0.5  # Weight for calculating overhead (battery level and RSSI)
 
 ###########################################################
@@ -28,9 +29,6 @@ class MyNode():
         '''
         Initialize the node.
         '''
-        # Initialize the LED pin
-        self.led_pin = machine.Pin(23, machine.Pin.OUT)
-
         # Sender logic
         self.sta = network.WLAN(network.STA_IF)
         self.sta.active(True)
@@ -40,14 +38,35 @@ class MyNode():
         self.esp = espnow.ESPNow()
         self.esp.active(True)
 
+        # Set self.id to the MAC address in readable format
+        self.id = ':'.join(f'{b:02x}' for b in self.sta.config('mac'))
+
         # Add the broadcast address to the peer list for discovering receivers
         self.broadcast_mac = b'\xff\xff\xff\xff\xff\xff'
         self.esp.add_peer(self.broadcast_mac)
 
-        # Set self.id to the MAC address in readable format
-        self.id = ':'.join(f'{b:02x}' for b in self.sta.config('mac'))
+        # Initialize I2C
+        i2c = SoftI2C(scl=Pin(22), sda=Pin(21), freq=100000)
 
-        self.pos = (random.randint(0, 10), random.randint(0, 10))  # TODO: Pull GPS data
+        # Initialize UART for GPS
+        try:
+            self.gps_uart = UART(1, baudrate=9600, tx=17, rx=16)  # Use UART1 for GPS (TX=GPIO17, RX=GPIO16)
+            self.log("UART for GPS initialized successfully.")
+        except OSError as e:
+            self.log(f"OSError occurred during UART initialization: {str(e)}")
+        except Exception as e:
+            self.log(f"Unexpected error during UART initialization: {str(e)}")
+
+        # Initialize BME280 sensor
+        try:
+            self.bme = BME280.BME280(i2c=i2c)  # Adjust address if necessary
+            self.log("BME280 sensor initialized successfully.")
+        except OSError as e:
+            self.log(f"OSError occurred during BME280 sensor initialization: {str(e)}")
+        except Exception as e:
+            self.log(f"Unexpected error during BME280 sensor initialization: {str(e)}")
+
+        self.pos = (0, 0)  # Initialize position to (0, 0)
 
         self.start_dreq = True
         self.txCounter = 0
@@ -117,15 +136,6 @@ class MyNode():
             self.path = str(self.path)
         mac_bytes = bytes(int(b, 16) for b in self.path.split(':'))
 
-        # Blink the LED to indicate data transmission
-        self.led_pin.on()
-        utime.sleep_ms(250)
-        self.led_pin.off()
-        utime.sleep_ms(250)
-        self.led_pin.on()
-        utime.sleep_ms(250)
-        self.led_pin.off()
-
         # wait for a random delay then send the data packet
         utime.sleep(randdelay())
         self.esp.send(mac_bytes, json_data)
@@ -182,12 +192,10 @@ class MyNode():
 
                 else:  # Data has reached the gateway
                     self.log(f"RECEIVED data from connected nodes")
-                    self.led_pin.on()
                     self.log(self.format_data_cache())
 
-                    utime.sleep(10)
+                    utime.sleep(INTERVAL)  # Wait for INTERVAL seconds before sending the next DREQ message
                     self.log(f"COMPLETE")
-                    self.led_pin.off()
                     self.start_dreq = True
                     self.txCounter += 1
                     self.neighbor_table = {} # Reset the Gateway neighbor table
@@ -224,8 +232,8 @@ class MyNode():
             sender = str(sender)
         mac_bytes = bytes(int(b, 16) for b in sender.split(':'))
 
-        self.battery = (random.randint(0, 100)/100)  + int(data['battery']) # battery level + accumulated battery level
-        self.rssi = round((self.esp.peers_table[mac_bytes][0]-(-127))/(0-(-127)) + int(data['rssi']),4)  # Normalized rssi + accumulated normalized rssi
+        self.battery = (1-(random.randint(0, 100)/100))  + int(data['battery']) # battery level + accumulated battery level
+        self.rssi = round((1-(self.esp.peers_table[mac_bytes][0]-(-127))/(0-(-127))) + int(data['rssi']),4)  # Normalized rssi + accumulated normalized rssi
 
         return round(WEIGHT*self.battery + (1-WEIGHT)*self.rssi)  # Calculate and return the overhead
 
@@ -286,15 +294,142 @@ class MyNode():
         '''
         Update the dataCache with the collected data.
         '''
+
+        # Get GPS data
+        self.update_gps()
+
+        # Read environmental data from BME280, if none set to 0
+        try:
+            temperature, pressure, humidity = self.read_bme280_data()
+        except Exception:
+            temperature, pressure, humidity = 0, 0, 0
+        
         self.dataCache[str(self.id)] = {
             'time': self.now,
             'id': str(self.id),
             'pos': str(self.pos),
-            'temp': random.randint(20, 30),
-            'hum': random.randint(40, 60),
+            'temp': temperature,
+            'hum': humidity,
+            'pressure': pressure,
             'rssi': str(self.rssi),
             'battery': str(self.battery)
         }
+
+    ###################
+    def update_gps(self):
+        '''
+        Fetch GPS data for a period of DELAY seconds, cache unique NMEA sentences, and update the position.
+        '''
+        gps_buffer = b''  # Buffer to collect raw data
+        cached_sentences = {}  # Dictionary to store unique NMEA sentences
+
+        start_time = utime.time()  # Record the start time
+        while utime.time() - start_time < DELAY:
+            # Check if there is data available from the GPS
+            if self.gps_uart.any():
+                data = self.gps_uart.read()
+                if data:
+                    gps_buffer += data  # Accumulate raw data
+
+                    # Check if a full NMEA sentence is available (ends with newline)
+                    if b'\n' in gps_buffer:
+                        # Split the buffer at the newline to get a full sentence
+                        nmea_sentence, gps_buffer = gps_buffer.split(b'\n', 1)
+
+                        try:
+                            # Decode the sentence and strip extra characters
+                            nmea_sentence = nmea_sentence.decode('utf-8').strip()
+
+                            # Only add valid NMEA sentences (those that start with '$')
+                            if nmea_sentence.startswith('$'):
+                                sentence_type = nmea_sentence.split(',')[0]  # Get the sentence type (e.g., $GNGGA)
+                                
+                                # Overwrite previous sentence of the same type
+                                cached_sentences[sentence_type] = nmea_sentence
+                        except Exception:
+                            self.log(f"Failed to decode GPS sentence")
+
+        # Log the unique GPS sentences
+        #self.log(f"GPS data: \n{list(cached_sentences.values())}")
+
+        # Process the cached NMEA sentences after DELAY seconds
+        self.process_cached_nmea(list(cached_sentences.values()))
+
+
+    ###################
+    def process_cached_nmea(self, cached_sentences):
+        '''
+        Process cached NMEA sentences to extract location data dynamically.
+        '''
+        latitude = None
+        longitude = None
+        fix_status = None
+        altitude = None
+
+        for sentence in cached_sentences:
+            if sentence.startswith('$GNGGA'):
+                # Parse $GNGGA sentence for latitude, longitude, and altitude
+                try:
+                    parts = sentence.split(',')
+                    latitude = self.convert_to_degrees(parts[2], parts[3])
+                    longitude = self.convert_to_degrees(parts[4], parts[5])
+                    altitude = parts[9]
+                    fix_status = parts[6]  # 0 = Invalid, 1 = GPS Fix, 2 = DGPS Fix
+                    self.log(f"GNGGA - Lat: {latitude}, Lon: {longitude}, Altitude: {altitude}, Fix: {fix_status}")
+                except Exception as e:
+                    self.log(f"Error parsing GNGGA: {str(e)}")
+
+            elif sentence.startswith('$GNRMC'):
+                # Parse $GNRMC sentence for latitude and longitude
+                try:
+                    parts = sentence.split(',')
+                    latitude = self.convert_to_degrees(parts[3], parts[4])
+                    longitude = self.convert_to_degrees(parts[5], parts[6])
+                    fix_status = parts[2]  # A = Valid, V = Invalid
+                    self.log(f"GNRMC - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
+                except Exception as e:
+                    self.log(f"Error parsing GNRMC: {str(e)}")
+
+            elif sentence.startswith('$GNGLL'):
+                # Parse $GNGLL sentence for latitude and longitude
+                try:
+                    parts = sentence.split(',')
+                    latitude = self.convert_to_degrees(parts[1], parts[2])
+                    longitude = self.convert_to_degrees(parts[3], parts[4])
+                    fix_status = parts[6]  # A = Valid, V = Invalid
+                    self.log(f"GNGLL - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
+                except Exception as e:
+                    self.log(f"Error parsing GNGLL: {str(e)}")
+
+        # Use the data if a valid fix is available
+        if fix_status in ['1', 'A']:  # Check if the fix is valid
+            self.pos = (latitude, longitude)
+            self.log(f"Valid position acquired: Latitude = {latitude}, Longitude = {longitude}, Altitude = {altitude}")
+        else:
+            self.log("No valid GPS fix available.")
+
+
+    ###################
+    def convert_to_degrees(self, value, direction):
+        '''
+        Convert NMEA format to degrees (for latitude/longitude)
+        '''
+        degrees = float(value[:2])
+        minutes = float(value[2:]) / 60
+        result = degrees + minutes
+        if direction in ['S', 'W']:
+            result = -result
+        return result
+
+    ###################
+    def read_bme280_data(self):
+        '''
+        Read temperature, humidity, and pressure from the BME280 sensor
+        '''
+        temperature = self.bme.temperature
+        humidity = self.bme.humidity
+        pressure = self.bme.pressure
+        return temperature, pressure, humidity
 
     ############################
     def log(self, msg):
@@ -306,12 +441,31 @@ class MyNode():
         Returns a formatted string representation of the data cache with aligned columns.
         '''
         formatted_cache = []
-        header = f"Tx:{self.txCounter} DATA:\n{'Time':<11}{'Node_ID':<12}{'Pos':<12}{'Temp':<8}{'Hum':<8}{'Battery':<8}{'RSSI':<8}"
+        header = (
+            f"Tx:{self.txCounter} DATA:\n"+
+            f"{'Time':<8}"+
+            f"{'Node_ID':<8}"+
+            f"{'Pos':<10}"+
+            f"{'Temp':<8}"+
+            f"{'Hum':<8}"+
+            f"{'Pressure':<12}"+
+            f"{'Battery':<8}"+
+            f"{'RSSI':<8}"
+        )
         formatted_cache.append(header)
         formatted_cache.append('-' * 80)  # Divider line
 
         for node_id, data in self.dataCache.items():
-            formatted_data = f"{data['time']:<11}{node_id[12:]:<12}{str(data['pos']):<12}{data['temp']:<8}{data['hum']:<8}{data['battery']:<8}{data['rssi']:<8}"
+            formatted_data = (
+                f"{data['time']:<8}"+
+                f"{node_id[12:]:<8}"+
+                f"{str(data['pos']):<10}"+
+                f"{data['temp']:<8}"+
+                f"{data['hum']:<8}"+
+                f"{data['pressure']:<12}"+
+                f"{data['battery']:<8}"+
+                f"{data['rssi']:<8}"
+            )
             formatted_cache.append(formatted_data)
 
         formatted_cache.append('-' * 80)  # Divider line
