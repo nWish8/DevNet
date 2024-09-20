@@ -100,14 +100,6 @@ class MyNode():
                 utime.sleep(1)
                 self.send_dreq(self.txCounter, self.battery, self.rssi, self.overhead, self.path, self.now)
                 self.start_dreq = False
-            
-
-            # Check if time since request exceeds INTERVAL - 5 seconds and no reply received
-            if self.id == GATEWAY and not self.start_dreq:
-                current_time = utime.time()
-                if current_time - self.last_request_time > INTERVAL - 5:
-                    self.log(f"No reply received in {INTERVAL - 5} seconds. Restarting data request.")
-                    self.start_dreq = True
 
             # Listen for tx
             try:
@@ -120,6 +112,13 @@ class MyNode():
                 data = json.loads(data.decode('utf-8'))  # Decode the message
                 self.log(f"RECEIVED: {data['msg']} from {sender}")
                 self.on_receive(sender, data['msg'], data)  # Handle the received message
+
+            # Check if time since request exceeds INTERVAL - 5 seconds and no reply received
+            if self.id == GATEWAY and not self.start_dreq:
+                current_time = utime.time()
+                if current_time - self.last_request_time > INTERVAL - 5:
+                    self.log(f"No reply received after {INTERVAL - 5} seconds.")
+                    self.start_dreq = True
 
             self.start_reply(sender)
 
