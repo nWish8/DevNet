@@ -3,8 +3,11 @@ import espnow  # type: ignore
 import utime
 import random
 import json
-from machine import SoftI2C, Pin, UART
+from machine import SoftI2C, Pin, UART, RTC
 import BME280
+
+import utelnetserver
+
 
 GATEWAY = 'e8:31:cd:70:f1:6c'  # Gateway MAC address
 INTERVAL = 10  # Interval for sending DREQ messages
@@ -18,7 +21,7 @@ def run():
     '''
     node = MyNode()
     node.init()
-    node.run()  # Start the asynchronous event loop
+    node.run()  # Start the event loop
 
 
 ###########################################################
@@ -29,10 +32,22 @@ class MyNode():
         '''
         Initialize the node.
         '''
-        # Sender logic
+
+        ssid = "nick"
+        password = "12345678"
+
+        # Initialize WLAN
         self.sta = network.WLAN(network.STA_IF)
         self.sta.active(True)
-        self.sta.disconnect()
+        # self.sta.disconnect()
+        self.sta.connect(ssid, password)
+
+        while not self.sta.isconnected():
+            pass
+        print('Connected, IP:', self.sta.ifconfig()[0])
+
+        # Start the Telnet server for remote terminal access
+        utelnetserver.start()
 
         # Initialize ESP-NOW
         self.esp = espnow.ESPNow()
@@ -49,13 +64,7 @@ class MyNode():
         i2c = SoftI2C(scl=Pin(22), sda=Pin(21), freq=100000)
 
         # Initialize UART for GPS
-        try:
-            self.gps_uart = UART(1, baudrate=9600, tx=17, rx=16)  # Use UART1 for GPS (TX=GPIO17, RX=GPIO16)
-            self.log("UART for GPS initialized successfully.")
-        except OSError as e:
-            self.log(f"OSError occurred during UART initialization: {str(e)}")
-        except Exception as e:
-            self.log(f"Unexpected error during UART initialization: {str(e)}")
+        self.gps_uart = UART(1, baudrate=9600, tx=17, rx=16)  # Use UART1 for GPS (TX=GPIO17, RX=GPIO16)
 
         # Initialize BME280 sensor
         try:
@@ -66,9 +75,10 @@ class MyNode():
         except Exception as e:
             self.log(f"Unexpected error during BME280 sensor initialization: {str(e)}")
 
-        self.pos = (0, 0)  # Initialize position to (0, 0)
+        self.update_gps()  # Fetch GPS data for the first time
 
         self.start_dreq = True
+        self.last_request_time = 0  # Store the time when the request was sent
         self.txCounter = 0
         self.neighbor_table = {}  # Dictionary to store neighbors their overheads and path
         self.battery = 0
@@ -91,6 +101,14 @@ class MyNode():
                 self.send_dreq(self.txCounter, self.battery, self.rssi, self.overhead, self.path, self.now)
                 self.start_dreq = False
             
+
+            # Check if time since request exceeds INTERVAL - 5 seconds and no reply received
+            if self.id == GATEWAY and not self.start_dreq:
+                current_time = utime.time()
+                if current_time - self.last_request_time > INTERVAL - 5:
+                    self.log(f"No reply received in {INTERVAL - 5} seconds. Restarting data request.")
+                    self.start_dreq = True
+
             # Listen for tx
             try:
                 sender, data = self.esp.recv()  # Listen for a message from any sender
@@ -312,7 +330,7 @@ class MyNode():
             'hum': humidity,
             'pressure': pressure,
             'rssi': str(self.rssi),
-            'battery': str(self.battery)
+            'battery': str(random.randint(0, 100)/100)
         }
 
     ###################
@@ -359,67 +377,108 @@ class MyNode():
     ###################
     def process_cached_nmea(self, cached_sentences):
         '''
-        Process cached NMEA sentences to extract location data dynamically.
+        Process cached NMEA sentences to extract location data dynamically and select the best fix.
         '''
-        latitude = None
-        longitude = None
-        fix_status = None
-        altitude = None
+        best_fix = None
+        best_hdop = float('inf')  # Initialize with the worst HDOP
 
         for sentence in cached_sentences:
             if sentence.startswith('$GNGGA'):
-                # Parse $GNGGA sentence for latitude, longitude, and altitude
+                # Parse $GNGGA sentence for fix quality, number of satellites, and HDOP
                 try:
                     parts = sentence.split(',')
                     latitude = self.convert_to_degrees(parts[2], parts[3])
                     longitude = self.convert_to_degrees(parts[4], parts[5])
-                    altitude = parts[9]
-                    fix_status = parts[6]  # 0 = Invalid, 1 = GPS Fix, 2 = DGPS Fix
-                    self.log(f"GNGGA - Lat: {latitude}, Lon: {longitude}, Altitude: {altitude}, Fix: {fix_status}")
+                    fix_quality = int(parts[6])  # Fix quality: 0 = Invalid, 1 = GPS fix, 2 = DGPS fix
+                    num_satellites = int(parts[7])
+                    hdop = float(parts[8]) if parts[8] else float('inf')  # Horizontal Dilution of Precision
+
+                    self.log(f"GNGGA - Lat: {latitude}, Lon: {longitude}, Fix: {fix_quality}, Satellites: {num_satellites}, HDOP: {hdop}")
+
+                    # Only consider valid fixes
+                    if fix_quality > 0 and hdop < best_hdop:
+                        best_fix = {
+                            'latitude': latitude,
+                            'longitude': longitude,
+                            'fix_quality': fix_quality,
+                            'num_satellites': num_satellites,
+                            'hdop': hdop
+                        }
+                        best_hdop = hdop
+
                 except Exception as e:
                     self.log(f"Error parsing GNGGA: {str(e)}")
 
-            # elif sentence.startswith('$GNRMC'):
-            #     # Parse $GNRMC sentence for latitude and longitude
-            #     try:
-            #         parts = sentence.split(',')
-            #         latitude = self.convert_to_degrees(parts[3], parts[4])
-            #         longitude = self.convert_to_degrees(parts[5], parts[6])
-            #         fix_status = parts[2]  # A = Valid, V = Invalid
-            #         self.log(f"GNRMC - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
-            #     except Exception as e:
-            #         self.log(f"Error parsing GNRMC: {str(e)}")
+            elif sentence.startswith('$GNRMC'):
+                # Parse $GNRMC sentence for latitude, longitude, fix status, and time
+                try:
+                    parts = sentence.split(',')
+                    latitude = self.convert_to_degrees(parts[3], parts[4])
+                    longitude = self.convert_to_degrees(parts[5], parts[6])
+                    fix_status = parts[2]  # A = Valid, V = Invalid
 
-            # elif sentence.startswith('$GNGLL'):
-            #     # Parse $GNGLL sentence for latitude and longitude
-            #     try:
-            #         parts = sentence.split(',')
-            #         latitude = self.convert_to_degrees(parts[1], parts[2])
-            #         longitude = self.convert_to_degrees(parts[3], parts[4])
-            #         fix_status = parts[6]  # A = Valid, V = Invalid
-            #         self.log(f"GNGLL - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
-            #     except Exception as e:
-            #         self.log(f"Error parsing GNGLL: {str(e)}")
+                    self.log(f"GNRMC - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
 
-        # Use the data if a valid fix is available
-        if fix_status in ['1', 'A']:  # Check if the fix is valid
-            self.pos = (latitude, longitude)
-            self.log(f"Valid position acquired: Latitude = {latitude}, Longitude = {longitude}, Altitude = {altitude}")
+                    # Extract GPS time (UTC) from GNRMC sentence
+                    gps_time = parts[1]  # hhmmss.sss format
+                    gps_date = parts[9]  # ddmmyy format
+
+                    if gps_time and gps_date:
+                        hours = int(gps_time[0:2])
+                        minutes = int(gps_time[2:4])
+                        seconds = int(gps_time[4:6])
+
+                        day = int(gps_date[0:2])
+                        month = int(gps_date[2:4])
+                        year = 2000 + int(gps_date[4:6])  # Assuming 20xx
+
+                        # Set the system time using the GPS time
+                        rtc = RTC()
+                        rtc.datetime((year, month, day, 0, hours, minutes, seconds, 0))  # Last 0 is for subseconds
+
+                        self.log(f"System time updated from GPS: {hours:02}:{minutes:02}:{seconds:02} on {day:02}/{month:02}/{year}")
+
+                    # Consider $GNRMC data if it's valid and there's no better GNGGA fix
+                    if fix_status == 'A' and best_fix is None:
+                        best_fix = {
+                            'latitude': latitude,
+                            'longitude': longitude,
+                            'fix_quality': 1,  # Assume basic GPS fix
+                            'num_satellites': 0,  # Not provided in GNRMC
+                            'hdop': best_hdop  # No HDOP in GNRMC, so keep the current best
+                        }
+
+                except Exception as e:
+                    self.log(f"Error parsing GNRMC: {str(e)}")
+
+            # Process other sentences like GNGLL similarly if needed
+
+        # Use the best fix if found
+        if best_fix:
+            self.pos = (best_fix['latitude'], best_fix['longitude'])
+            self.log(f"Best position acquired: Latitude = {best_fix['latitude']}, Longitude = {best_fix['longitude']}, Fix Quality = {best_fix['fix_quality']}, Satellites = {best_fix['num_satellites']}, HDOP = {best_fix['hdop']}")
         else:
-            self.log("No valid GPS fix available.")
+            self.log("No valid GPS fix found.")
 
 
-    ###################
     def convert_to_degrees(self, value, direction):
         '''
         Convert NMEA format to degrees (for latitude/longitude)
         '''
-        degrees = float(value[:2])
-        minutes = float(value[2:]) / 60
+        if direction in ['N', 'S']:  # Latitude
+            degrees = float(value[:2])
+            minutes = float(value[2:]) / 60
+        elif direction in ['E', 'W']:  # Longitude
+            degrees = float(value[:3])
+            minutes = float(value[3:]) / 60
+        else:
+            raise ValueError(f"Invalid direction: {direction}")
+
         result = degrees + minutes
         if direction in ['S', 'W']:
             result = -result
         return result
+
 
     ###################
     def read_bme280_data(self):
@@ -433,7 +492,7 @@ class MyNode():
 
     ############################
     def log(self, msg):
-        print(f"Node {str(self.id):4}[{self.now:10}] {msg}")
+        print(f"Node {str(self.id[12:]):6}[{self.now:8}] {msg}")
 
     ############################
     def format_data_cache(self):
@@ -443,13 +502,13 @@ class MyNode():
         formatted_cache = []
         header = (
             f"Tx:{self.txCounter} DATA:\n"+
-            f"{'Time':<8}"+
+            f"{'Time':<9}"+
             f"{'MAC':<6}"+
             f"{'Pos':<22}"+
             f"{'Temp':<8}"+
             f"{'Hum':<8}"+
             f"{'Pressure':<12}"+
-            f"{'Battery':<8}"+
+            f"{'Batt':<6}"+
             f"{'RSSI':<8}"
         )
         formatted_cache.append(header)
@@ -457,13 +516,13 @@ class MyNode():
 
         for node_id, data in self.dataCache.items():
             formatted_data = (
-                f"{data['time']:<8}"+
+                f"{data['time']:<9}"+
                 f"{node_id[12:]:<6}"+
                 f"{str(data['pos']):<22}"+
                 f"{data['temp']:<8}"+
                 f"{data['hum']:<8}"+
                 f"{data['pressure']:<12}"+
-                f"{data['battery']:<8}"+
+                f"{data['battery']:<6}"+
                 f"{data['rssi']:<8}"
             )
             formatted_cache.append(formatted_data)
@@ -475,7 +534,10 @@ class MyNode():
     ############################
     @property
     def now(self):
-        return utime.ticks_ms()
+        # Get the current local time in readable format (e.g., (year, month, day, hour, minute, second, weekday, yearday))
+        current_time = utime.localtime()
+        return "{:02}:{:02}:{:02}".format(current_time[3], current_time[4], current_time[5])  # Format as HH:MM:SS
+
 
 ###########################################################
 def randdelay():

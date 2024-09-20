@@ -6,6 +6,7 @@
 		}
 	],
 	"settings": {
-		"python.languageServer": "Pylance"
+		"python.languageServer": "Pylance",
+		"pymakr.devices.configs": {}
 	}
 }
