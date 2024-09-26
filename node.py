@@ -76,6 +76,32 @@ class MyNode:
             self.log(f"Error initializing ADC: {str(e)}")
             self.adc = None
 
+        # Initialize GSM module only on the gateway node
+        if self.node_id == GATEWAY_MAC:
+            try:
+                # Initialize UART for GSM
+                self.gsm_uart = UART(2, baudrate=115200, tx=25, rx=26)  # Use UART2 for GSM (TX=GPIO25, RX=GPIO26)
+
+                # Initialize pins for GSM control
+                self.gsm_pwr = Pin(27, Pin.OUT)
+                self.gsm_rst = Pin(14, Pin.OUT)
+
+                # Turn on the GSM module
+                self.gsm_pwr.on()
+                utime.sleep(1)  # Wait for the module to power up
+
+                # Reset the GSM module
+                self.gsm_rst.off()
+                utime.sleep(0.1)
+                self.gsm_rst.on()
+
+                self.log("GSM module initialized successfully.")
+            except Exception as e:
+                self.log(f"Error initializing GSM module: {str(e)}")
+                self.gsm_uart = None  # Set to None if initialization fails
+        else:
+            self.gsm_uart = None  # GSM module not present on other nodes
+
         self.update_gps()  # Fetch GPS data for the first time
 
         self.start_dreq = True
@@ -216,6 +242,9 @@ class MyNode:
                 else:  # Data has reached the gateway
                     self.log("RECEIVED data from connected nodes")
                     self.log(self.format_data_cache())
+
+                    # Send data over GSM module
+                    self.send_data_over_gsm(self.format_data_cache())
 
                     utime.sleep(INTERVAL)  # Wait for INTERVAL seconds before sending the next DREQ message
                     self.log("COMPLETE")
@@ -496,7 +525,7 @@ class MyNode:
         '''
         if self.adc:
             raw_value = self.adc.read()
-            voltage = (raw_value / 4095.0) * 3.3 * 2  # Assuming voltage divider
+            voltage = (raw_value / 4095.0) * 3.3 * 2  # Multiply by 2 due to voltage divider
             battery_level = (voltage - 3.0) / (4.2 - 3.0)  # Normalize between 0 (3.0V) and 1 (4.2V)
             battery_level = min(max(battery_level, 0.0), 1.0)  # Clamp between 0 and 1
             return battery_level
@@ -565,6 +594,35 @@ class MyNode:
         formatted_cache.append('-' * 100)  # Divider line
 
         return "\n".join(formatted_cache)
+
+    def send_data_over_gsm(self, data):
+        '''
+        Send the collected data over the GSM module.
+        '''
+        if self.gsm_uart:
+            try:
+                # Example of sending data via GSM module
+                # This is a placeholder for actual GSM communication code
+                # For instance, sending an HTTP POST request via GSM module
+
+                # Initialize GSM module commands here
+                self.log("Initializing GSM module for data transmission...")
+
+                # Send AT commands to establish connection and send data
+                # This is a simplified example; actual implementation may vary
+                self.gsm_uart.write('AT\r\n')
+                utime.sleep(1)
+                response = self.gsm_uart.read()
+                self.log(f"GSM Response: {response}")
+
+                # Additional GSM communication logic goes here
+                # For example, sending data to a server using HTTP over GSM
+
+                self.log("Data sent over GSM module.")
+            except Exception as e:
+                self.log(f"Error sending data over GSM: {str(e)}")
+        else:
+            self.log("GSM module not initialized or not present on this node.")
 
     @property
     def now(self):
