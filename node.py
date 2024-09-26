@@ -1,3 +1,4 @@
+import config  # Import the config module
 import network
 import espnow  # type: ignore
 import utime
@@ -27,8 +28,8 @@ class MyNode:
         Initialize the node.
         '''
 
-        ssid = "your_ssid"
-        password = "your_password"
+        ssid = config.WIFI_SSID
+        password = config.WIFI_PASSWORD
 
         # Initialize WLAN
         self.sta = network.WLAN(network.STA_IF)
@@ -244,7 +245,7 @@ class MyNode:
                     self.log(self.format_data_cache())
 
                     # Send data over GSM module
-                    self.send_data_over_gsm(self.format_data_cache())
+                    # self.send_data_over_gsm(self.format_data_cache())
 
                     utime.sleep(INTERVAL)  # Wait for INTERVAL seconds before sending the next DREQ message
                     self.log("COMPLETE")

@@ -4,3 +4,4 @@ pymakr.conf
 .micropy
 venv
 FlashGuide.txt
+config.py
