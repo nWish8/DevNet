@@ -9,7 +9,8 @@ import BME280
 import utelnetserver
 
 GATEWAY_MAC = 'e8:31:cd:70:f1:6c'  # Gateway MAC address
-INTERVAL = 10  # Interval for sending DREQ messages
+INTERVAL = 20  # Increased to allow time for replies
+REPLY_TIMEOUT = 15  # Should be less than INTERVAL
 DELAY = 2  # Delay for reading GPS data
 WEIGHT = 0.5  # Weight for calculating overhead (battery level and RSSI)
 
@@ -36,29 +37,34 @@ class MyNode:
         self.sta.active(True)
         self.sta.connect(ssid, password)
 
-        while not self.sta.isconnected():
-            utime.sleep(0.1)
-        print('Connected, IP:', self.sta.ifconfig()[0])
-
-        # Start the Telnet server for remote terminal access
-        utelnetserver.start()
+        # Set self.node_id to the MAC address in readable format
+        self.node_id = ':'.join(f'{b:02x}' for b in self.sta.config('mac'))
 
         # Initialize ESP-NOW
         self.esp = espnow.ESPNow()
         self.esp.active(True)
 
-        # Set self.node_id to the MAC address in readable format
-        self.node_id = ':'.join(f'{b:02x}' for b in self.sta.config('mac'))
+        if self.node_id == GATEWAY_MAC:
+            while not self.sta.isconnected():
+                utime.sleep(0.1)
+            print('Connected, IP:', self.sta.ifconfig()[0])
+
+        # Start the Telnet server for remote terminal access
+        utelnetserver.start()
 
         # Add the broadcast address to the peer list for discovering receivers
         self.broadcast_mac = b'\xff\xff\xff\xff\xff\xff'
         self.esp.add_peer(self.broadcast_mac)
 
-        # Initialize I2C
+        # Initialize I2C for BME280 sensor
         i2c = SoftI2C(scl=Pin(22), sda=Pin(21), freq=100000)
 
         # Initialize UART for GPS
-        self.gps_uart = UART(1, baudrate=9600, tx=17, rx=16)  # Use UART1 for GPS (TX=GPIO17, RX=GPIO16)
+        self.gps_uart = UART(1, baudrate=9600, tx=16, rx=17)  # Use UART1 for GPS (TX=GPIO17, RX=GPIO16)
+        # Initialize PPS pin
+        self.pps_pin = Pin(33, Pin.IN)  # GPIO33 connected to PPS signal
+        # Attach an interrupt to the PPS pin
+        #self.pps_pin.irq(trigger=Pin.IRQ_RISING, handler=self.handle_pps_pulse)
 
         # Initialize BME280 sensor
         try:
@@ -106,9 +112,12 @@ class MyNode:
         self.update_gps()  # Fetch GPS data for the first time
 
         self.start_dreq = True
+        self.reply_flag = False
+        self.reply_deadline = None  # Initialize reply deadline
         self.last_request_time = 0  # Store the time when the request was sent
         self.tx_counter = 0
         self.neighbor_table = {}  # Dictionary to store neighbors, their overheads, and paths
+        self.hop_count = 0 # Hop count to the gateway
         self.battery_level = 0.0
         self.rssi = 0.0
         self.overhead = 0.0
@@ -116,7 +125,7 @@ class MyNode:
         self.clock_offset = 0  # Clock offset for synchronization
         self.start_flag = False
         self.data_cache = {}
-        self.position = (0.0, 0.0)  # Initialize position
+        self.latency = 0
 
     def run(self):
         '''Main loop for node'''
@@ -126,7 +135,9 @@ class MyNode:
                 self.log("STARTING...")
                 utime.sleep(1)
                 self.send_dreq()
+                self.latency = utime.ticks_ms()
                 self.start_dreq = False
+                self.reply_flag = False
                 self.last_request_time = utime.time()
 
             # Listen for messages
@@ -137,14 +148,17 @@ class MyNode:
                     data = json.loads(data.decode('utf-8'))  # Decode the message
                     self.log(f"RECEIVED: {data['msg']} from {sender_mac}")
                     self.on_receive(sender_mac, data['msg'], data)
+                    if data['msg'] == 'dreply':
+                        self.reply_flag = True  # Only set to True when a DREP is received
             except OSError:
-                pass  # No data received
+                pass
 
-            # Check if time since request exceeds INTERVAL - 5 seconds and no reply received
-            if self.node_id == GATEWAY_MAC and not self.start_dreq:
+            # Check if time since request exceeds REPLY_TIMEOUT + 5 seconds and no reply received
+            if not self.reply_flag and self.node_id == GATEWAY_MAC and not self.start_dreq:
                 current_time = utime.time()
-                if current_time - self.last_request_time > INTERVAL - 5:
-                    self.log(f"No reply received after {INTERVAL - 5} seconds.")
+                if current_time - self.last_request_time > REPLY_TIMEOUT + 5:
+                    self.log(f"No reply received after {REPLY_TIMEOUT + 5} seconds.")
+                    self.start_flag = True
                     self.start_dreq = True
 
             self.start_reply()
@@ -153,7 +167,7 @@ class MyNode:
 
     def send_dreq(self):
         '''
-        Send a Data Request (DREQ) message to the broadcast address.
+        Send a Data Request (dreq) message to the broadcast address.
         '''
 
         data = {
@@ -167,31 +181,31 @@ class MyNode:
         }
         json_data = json.dumps(data).encode('utf-8')  # Encode data to JSON
 
-        utime.sleep(self.rand_delay())  # Random delay to simulate network latency
+        utime.sleep(self.rand_delay())  # Random delay to avoid collisions
 
         try:
             self.esp.send(self.broadcast_mac, json_data)
-            self.log(f"SENT: DREQ from {self.node_id}")
+            self.log(f"SENT: dreq from {self.node_id}")
         except Exception as e:
-            self.log(f"Error sending message: {str(e)}")
+            self.log(f"Error sending dreq: {str(e)}")
 
     def send_dreply(self):
         '''
-        Send a Data Reply (DREP) message to the next node in the path.
+        Send a Data Reply (drep) message to the next node in the path.
         '''
 
-        data = {'msg': 'dreply', 'data': self.data_cache}
+        data = {'msg': 'drep', 'data': self.data_cache}
         json_data = json.dumps(data).encode('utf-8')  # Encode data to JSON
 
         mac_bytes = bytes(int(b, 16) for b in self.path.split(':'))
 
-        utime.sleep(self.rand_delay())  # Wait for a random delay
+        utime.sleep(self.rand_delay())  # Random delay to avoid collisions
 
         try:
             self.esp.send(mac_bytes, json_data)
-            self.log(f"SENT: DREP to {self.path}")
+            self.log(f"SENT: drep to {self.path}")
         except Exception as e:
-            self.log(f"Error sending DREP: {str(e)}")
+            self.log(f"Error sending drep: {str(e)}")
 
     def on_receive(self, sender_mac, msg, data):
         '''
@@ -208,6 +222,7 @@ class MyNode:
                     utime.sleep(self.rand_delay())
                     self.send_dreq()  # Forward the DREQ message
                 self.start_flag = True  # Set the start flag to True
+                self.reply_deadline = utime.time() + REPLY_TIMEOUT  # Set the reply deadline
 
             else:  # Node has received a DREQ message before
                 if sender_mac not in self.neighbor_table or data['overhead'] < self.neighbor_table[sender_mac]['overhead']:
@@ -221,12 +236,19 @@ class MyNode:
                             self.overhead = self.calculate_overhead(sender_mac, data) + data['overhead']  # Update node overhead
                             utime.sleep(self.rand_delay())
                             self.send_dreq()  # Forward the DREQ message
-                        self.start_flag = True
+                        self.start_flag = True  # Set the start flag to True
+                        self.reply_deadline = utime.time() + REPLY_TIMEOUT  # Set the reply deadline
 
-        elif msg == 'dreply':
-            self.log(f"RECEIVED: DREP from {sender_mac}")
+        elif msg == 'drep':
 
-            self.data_cache_update()  # Add own data to the data cache
+            # Incrmement hop count of recieved data
+            # For all instances in the parsed data increment hop count by 1
+            for value in data['data'].values():
+                value['hop_count'] += 1
+
+            # Only add own data if not already added
+            if self.node_id not in self.data_cache:
+                self.data_cache_update()  # Add own data to the data cache
 
             self.data_cache.update(data['data'])  # Merge received data into the cache
 
@@ -241,18 +263,9 @@ class MyNode:
                     utime.sleep(self.rand_delay())  # Wait for a random delay
                     self.send_dreply()  # Send the data packet to the next node
                 else:  # Data has reached the gateway
-                    self.log("RECEIVED data from connected nodes")
-                    self.log(self.format_data_cache())
-
-                    # Send data over GSM module
-                    # self.send_data_over_gsm(self.format_data_cache())
-
-                    utime.sleep(INTERVAL)  # Wait for INTERVAL seconds before sending the next DREQ message
-                    self.log("COMPLETE")
-                    self.start_dreq = True
-                    self.tx_counter += 1
-                    self.neighbor_table = {}  # Reset the gateway neighbor table
-                    self.data_cache = {}  # Reset data cache
+                    self.log_data()  # Log the collected data
+                self.start_flag = False
+                self.reply_deadline = None  # Reset the reply deadline
             else:
                 # Unreceived branches
                 pending_branches = [key for key, neighbor in branches.items() if neighbor.get('rx', 0) == 0]
@@ -261,10 +274,77 @@ class MyNode:
     def start_reply(self):
         '''The reply process'''
 
-        if self.is_edge_node() and self.start_flag and self.node_id != GATEWAY_MAC:
-            self.data_cache_update()  # Add own data to the data cache
-            self.send_dreply()  # Send the DREP message
-            self.start_flag = False
+        if self.start_flag:
+            # Check if edge node or reply timeout exceeded
+            if self.is_edge_node() or (self.reply_deadline and utime.time() >= self.reply_deadline):
+                # Only add own data if not already added
+                if self.node_id not in self.data_cache:
+                    self.data_cache_update()  # Add own data to the data cache
+                if self.node_id == GATEWAY_MAC:
+                    self.log_data()  # Log the collected data
+                else:
+                    self.send_dreply()  # Send the DREP message
+                self.start_flag = False
+                self.reply_deadline = None  # Reset the deadline
+
+    def log_data(self):
+        '''Log the collected data'''
+        
+        # Calcualte latency in seconds
+        self.latency = utime.ticks_diff(utime.ticks_ms(), self.latency) / 1000
+        
+        # Add data to the log file
+        filename = 'latency.txt'
+        try:
+            if self.tx_counter == 0:
+                # Overwrite the file if tx_counter is 0
+                mode = 'w'
+                data_string = self.init_latency()
+
+            else:
+                # Append to the file if tx_counter is not 0
+                mode = 'a'
+                data_string = self.format_latency()
+            
+            with open(filename, mode) as f:
+                f.write(data_string)
+            self.log(f"Data written to {filename}")
+        except Exception as e:
+            self.log(f"Error writing data to file: {str(e)}")
+
+
+        # Add data to the log file
+        filename = 'data_log.txt'
+        try:
+            if self.tx_counter == 0:
+                # Overwrite the file if tx_counter is 0
+                mode = 'w'
+                data_string = self.init_data_cache()
+
+            else:
+                # Append to the file if tx_counter is not 0
+                mode = 'a'
+                data_string = self.format_data_cache()
+            
+            with open(filename, mode) as f:
+                f.write(data_string + '\n')
+            self.log(f"Data written to {filename}")
+        except Exception as e:
+            self.log(f"Error writing data to file: {str(e)}")
+
+        
+        self.log(f"DATA:\n" + self.init_data_cache())
+
+        # Send data over GSM module
+        # self.send_data_over_gsm(self.format_data_cache())
+
+        self.log("COMPLETE")
+        self.start_dreq = True
+        self.tx_counter += 1
+        self.neighbor_table = {}  # Reset the gateway neighbor table
+        self.data_cache = {}  # Reset data cache
+
+        utime.sleep(INTERVAL)  # Wait for INTERVAL seconds before sending the next DREQ message
 
     def lowest_overhead_neighbor(self):
         '''
@@ -315,6 +395,8 @@ class MyNode:
             self.overhead = 0.0
             self.path = GATEWAY_MAC
             self.start_flag = False
+            self.reply_flag = False  # Reset reply flag
+            self.reply_deadline = None  # Reset the reply deadline
             self.data_cache = {}
 
     def update_neighbor_table(self, sender_mac, data):
@@ -322,10 +404,13 @@ class MyNode:
 
         mac_bytes = bytes(int(b, 16) for b in sender_mac.split(':'))
 
-        if mac_bytes not in self.esp.peers_table:
-            try:
-                self.esp.add_peer(mac_bytes)  # Add the peer
-            except OSError as e:
+        try:
+            self.esp.add_peer(mac_bytes)  # Attempt to add the peer
+            self.log(f"Added peer {sender_mac}")
+        except OSError as e:
+            if e.args[0] == -12395:  # ESP_ERR_ESPNOW_EXIST
+                pass  # Peer already exists, no action needed
+            else:
                 self.log(f"Error adding peer {sender_mac}: {e}")
 
         self.neighbor_table[sender_mac] = {
@@ -333,7 +418,7 @@ class MyNode:
             'rssi': float(data['rssi']),                   # Store the RSSI
             'overhead': float(data['overhead']),           # Store the overhead
             'path': data['path'],                          # Store the path
-            'rx': 0                                        # Store the number of packets received
+            'rx': 0                                        # Initialize packets received
         }
 
     def data_cache_update(self):
@@ -364,7 +449,8 @@ class MyNode:
             'humidity': humidity,
             'pressure': pressure,
             'rssi': rssi,
-            'battery_level': battery_level
+            'battery_level': battery_level,
+            'hop_count': self.hop_count
         }
 
     def update_gps(self):
@@ -402,6 +488,36 @@ class MyNode:
 
         # Process the cached NMEA sentences after DELAY seconds
         self.process_cached_nmea(list(cached_sentences.values()))
+
+    def handle_pps_pulse(self, pin):
+        '''
+        Interrupt handler for PPS pulse.
+        '''
+        current_time = utime.ticks_us()
+        if hasattr(self, 'last_pps_time'):
+            # Ignore pulses that occur too close together (e.g., within 500 ms)
+            if utime.ticks_diff(current_time, self.last_pps_time) < 500000:
+                return
+        self.last_pps_time = current_time
+
+        # Synchronize system time if GPS time is available
+        if hasattr(self, 'gps_time'):
+            # Set the system time to the last known GPS time plus one second
+            rtc = RTC()
+            year, month, day, hours, minutes, seconds = self.gps_time
+            seconds += 1  # PPS indicates the start of the next second
+            if seconds >= 60:
+                seconds = 0
+                minutes += 1
+            if minutes >= 60:
+                minutes = 0
+                hours += 1
+            if hours >= 24:
+                hours = 0
+                day += 1  # Simplified; does not handle month/year rollover
+
+            rtc.datetime((year, month, day, 0, hours, minutes, seconds, 0))
+            #self.log(f"System time synchronized using PPS: {hours:02}:{minutes:02}:{seconds:02} on {day:02}/{month:02}/{year}")
 
     def process_cached_nmea(self, cached_sentences):
         '''
@@ -464,6 +580,9 @@ class MyNode:
                         rtc = RTC()
                         rtc.datetime((year, month, day, 0, hours, minutes, seconds, 0))  # Last 0 is for subseconds
 
+                        # Store GPS time for PPS synchronization
+                        self.gps_time = (year, month, day, hours, minutes, seconds)
+
                         self.log(f"System time updated from GPS: {hours:02}:{minutes:02}:{seconds:02} on {day:02}/{month:02}/{year}")
 
                     # Consider RMC data if it's valid and there's no better GGA fix
@@ -484,6 +603,7 @@ class MyNode:
             self.position = (best_fix['latitude'], best_fix['longitude'])
             self.log(f"Best position acquired: Latitude = {best_fix['latitude']}, Longitude = {best_fix['longitude']}, Fix Quality = {best_fix['fix_quality']}, Satellites = {best_fix['num_satellites']}, HDOP = {best_fix['hdop']}")
         else:
+            self.position = [0.0, 0.0]
             self.log("No valid GPS fix found.")
 
     def convert_to_degrees(self, raw_value, direction):
@@ -526,9 +646,21 @@ class MyNode:
         '''
         if self.adc:
             raw_value = self.adc.read()
-            voltage = (raw_value / 4095.0) * 3.3 * 2  # Multiply by 2 due to voltage divider
-            battery_level = (voltage - 3.0) / (4.2 - 3.0)  # Normalize between 0 (3.0V) and 1 (4.2V)
+            voltage_divider_factor = (33+82)/81  # Voltage divider factor based on resistor values
+
+            v_ref = 3.3  # Reference voltage of the ADC
+
+            # Convert ADC reading to voltage
+            v_adc = (raw_value / 4095.0) * v_ref
+
+            # Calculate the actual battery voltage
+            battery_voltage = v_adc * voltage_divider_factor
+
+            # Normalize the battery voltage to a level between 0 and 1
+            # Assuming battery voltage ranges from 3.0V (0%) to 4.2V (100%)
+            battery_level = (battery_voltage - 3.0) / (4.2 - 3.0)
             battery_level = min(max(battery_level, 0.0), 1.0)  # Clamp between 0 and 1
+
             return battery_level
         else:
             return 0.0
@@ -541,6 +673,7 @@ class MyNode:
             rssi = self.esp.peers_table[mac_bytes][0]  # RSSI value
         else:
             rssi = self.sta.status('rssi')  # RSSI of connected Wi-Fi network
+        self.log(f"RSSI: {rssi}")
         return rssi
 
     def normalize_battery(self, battery_level):
@@ -553,49 +686,109 @@ class MyNode:
         '''
         Normalize RSSI value between 0 and 1.
         '''
-        normalized = (rssi - (-100)) / (-50 - (-100))  # Assuming RSSI range -100 dBm to -50 dBm
+        normalized = (rssi - (-124)) / (-0 - (-124))  # Assuming RSSI range -100 dBm to -50 dBm
         normalized = min(max(normalized, 0.0), 1.0)  # Clamp between 0 and 1
         return 1.0 - normalized  # Lower RSSI (farther away) means higher overhead
 
     def log(self, msg):
         print(f"Node {str(self.node_id[12:]):6}[{self.now}] {msg}")
 
-    def format_data_cache(self):
+    def init_latency(self):
+        '''
+        Returns a formatted string representation 
+        '''
+        formatted_cache = []
+        header = (
+            f"Latency Log:\n" +
+            f"{'Tx':<4}" +
+            f"{'Time':<9}"
+        )
+        formatted_cache.append(header)
+        formatted_cache.append('-' * 100)  # Divider line
+
+        formatted_data = (
+            f"{self.tx_counter:<4}" +
+            f"{self.latency:<9}" 
+        )
+        formatted_cache.append(formatted_data)
+
+        return "\n".join(formatted_cache)
+
+    def format_latency(self):
+        '''
+        Returns a formatted string representation of the data cache with aligned columns.
+        '''
+        formatted_cache = []
+
+        formatted_data = (f"\n" +  
+            f"{self.tx_counter:<4}" +
+            f"{self.latency:<9}" 
+        )
+        formatted_cache.append(formatted_data)
+
+        return "\n".join(formatted_cache)
+
+    def init_data_cache(self):
         '''
         Returns a formatted string representation of the data cache with aligned columns.
         '''
         formatted_cache = []
         header = (
-            f"Tx:{self.tx_counter} DATA:\n" +
+            f"Data Log:\n" +
+            f"{'Tx':<4}" +
             f"{'Time':<9}" +
-            f"{'MAC':<17}" +
+            f"{'MAC':<15}" +
             f"{'Position':<22}" +
             f"{'Temp':<8}" +
             f"{'Hum':<8}" +
             f"{'Pressure':<12}" +
             f"{'Batt':<6}" +
-            f"{'RSSI':<8}"
+            f"{'RSSI':<6}" +
+            f"{'HopCount':<6}"
         )
         formatted_cache.append(header)
         formatted_cache.append('-' * 100)  # Divider line
 
         for node_id, data in self.data_cache.items():
             formatted_data = (
+                f"{self.tx_counter:<4}" +
                 f"{data['time']:<9}" +
-                f"{node_id:<17}" +
+                f"{node_id[12:]:<15}" +
                 f"{str(data['position']):<22}" +
                 f"{data['temperature']:<8.2f}" +
                 f"{data['humidity']:<8.2f}" +
                 f"{data['pressure']:<12.2f}" +
-                f"{data['battery_level']:<6.2f}" +
-                f"{data['rssi']:<8}"
+                f"{data['battery_level'] * 100:<6.1f}" +  # Display battery level as percentage
+                f"{data['rssi']:<6}" +
+                f"{data['hop_count']:<6}"
             )
             formatted_cache.append(formatted_data)
 
-        formatted_cache.append('-' * 100)  # Divider line
-
         return "\n".join(formatted_cache)
 
+    def format_data_cache(self):
+        '''
+        Returns a formatted string representation of the data cache with aligned columns.
+        '''
+        formatted_cache = []
+
+        for node_id, data in self.data_cache.items():
+            formatted_data = (
+                f"{self.tx_counter:<4}" +
+                f"{data['time']:<9}" +
+                f"{node_id[12:]:<15}" +
+                f"{str(data['position']):<22}" +
+                f"{data['temperature']:<8.2f}" +
+                f"{data['humidity']:<8.2f}" +
+                f"{data['pressure']:<12.2f}" +
+                f"{data['battery_level'] * 100:<6.1f}" +  # Display battery level as percentage
+                f"{data['rssi']:<6}" +
+                f"{data['hop_count']:<6}"
+            )
+            formatted_cache.append(formatted_data)
+
+        return "\n".join(formatted_cache)
+    
     def send_data_over_gsm(self, data):
         '''
         Send the collected data over the GSM module.
@@ -633,9 +826,9 @@ class MyNode:
 
     def rand_delay(self):
         '''
-        Returns a random delay between 0.2 and 0.6 seconds.
+        Returns a random delay between 0.2 and 2.0 seconds.
         '''
-        return random.uniform(0.2, 0.6)
+        return random.uniform(0.2, 2.0)
 
 ###########################################################
 if __name__ == "__main__":
