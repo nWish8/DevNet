@@ -109,7 +109,11 @@ class MyNode:
         else:
             self.gsm_uart = None  # GSM module not present on other nodes
 
-        self.update_gps()  # Fetch GPS data for the first time
+        #self.update_gps()  # Fetch GPS data for the first time
+
+        self.gps_flag = False  # Flag to indicate GPS data availability
+        while not self.gps_flag:
+            self.update_gps()
 
         self.start_dreq = True
         self.reply_flag = False
@@ -600,9 +604,11 @@ class MyNode:
 
         # Use the best fix if found
         if best_fix:
+            self.gps_flag = True
             self.position = (best_fix['latitude'], best_fix['longitude'])
             self.log(f"Best position acquired: Latitude = {best_fix['latitude']}, Longitude = {best_fix['longitude']}, Fix Quality = {best_fix['fix_quality']}, Satellites = {best_fix['num_satellites']}, HDOP = {best_fix['hdop']}")
         else:
+            self.gps_flag = False
             self.position = [0.0, 0.0]
             self.log("No valid GPS fix found.")
 
