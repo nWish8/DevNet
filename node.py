@@ -291,12 +291,6 @@ class MyNode:
                 self.start_flag = False
                 self.reply_deadline = None  # Reset the deadline
 
-    def lowest_overhead_neighbor(self):
-        '''
-        Returns the neighbor with the lowest overhead.
-        '''
-        return min(self.neighbor_table, key=lambda n: self.neighbor_table[n]['overhead'])
-
     def calculate_overhead(self, sender_mac, data):
         '''
         Calculate the overhead based on battery level and RSSI.
@@ -304,27 +298,16 @@ class MyNode:
         mac_bytes = bytes(int(b, 16) for b in sender_mac.split(':'))
 
         # Parse the battery and RSSI values as floats
-        received_battery = float(data['battery_level'])
-        received_rssi = float(data['rssi'])
+        recieved_apparent_battery = float(data['battery_level'])
+        recieved_apparent_rssi = float(data['rssi'])
 
         # Apparent normalized battery level and RSSI
-        self.battery_level = self.normalize_battery(self.read_battery_level()) + received_battery
-        self.rssi = self.normalize_rssi(self.read_rssi(mac_bytes)) + received_rssi
+        self.apparent_battery = self.read_battery_level() + recieved_apparent_battery
+        self.apparent_rssi = self.read_rssi(sender_mac) + recieved_apparent_rssi
 
         # Calculate and return the overhead
-        overhead = WEIGHT * self.battery_level + (1 - WEIGHT) * self.rssi
+        overhead = round(WEIGHT * self.apparent_battery + (1 - WEIGHT) * -1*self.apparent_rssi,3)
         return overhead
-
-    def is_edge_node(self):
-        '''
-        Determine if the node is an edge node by checking the path of all neighbors.
-        The node is an edge node if its ID is not stored as the path in any neighbor's entry.
-        Returns True if the node is an edge node, False otherwise.
-        '''
-        for neighbor in self.neighbor_table.values():
-            if neighbor.get('path') == self.node_id:
-                return False
-        return True
 
     def is_new_transaction(self, data):
         '''If new transaction, reset the node.'''
@@ -339,6 +322,23 @@ class MyNode:
             self.reply_flag = False  # Reset reply flag
             self.reply_deadline = None  # Reset the reply deadline
             self.data_cache = {}
+
+    def is_edge_node(self):
+        '''
+        Determine if the node is an edge node by checking the path of all neighbors.
+        The node is an edge node if its ID is not stored as the path in any neighbor's entry.
+        Returns True if the node is an edge node, False otherwise.
+        '''
+        for neighbor in self.neighbor_table.values():
+            if neighbor.get('path') == self.node_id:
+                return False
+        return True
+
+    def lowest_overhead_neighbor(self):
+        '''
+        Returns the neighbor with the lowest overhead.
+        '''
+        return min(self.neighbor_table, key=lambda n: self.neighbor_table[n]['overhead'])
 
     def update_neighbor_table(self, sender_mac, data):
         '''Update the neighbor table with sender info and add peer to ESP-NOW'''
@@ -618,22 +618,6 @@ class MyNode:
             rssi = self.sta.status('rssi')  # RSSI of connected Wi-Fi network
         self.log(f"RSSI: {rssi}")
         return rssi
-
-    def normalize_battery(self, battery_level):
-        '''
-        Normalize the battery level between 0 and 1.
-        '''
-        normalized = (battery_level - (100)) / (0 - (100))  # Assuming battery range 100 to 0 
-        normalized = min(max(normalized, 0.0), 1.0)  # Clamp between 0 and 1
-        return 1.0 - battery_level  # Lower battery level means higher overhead
-
-    def normalize_rssi(self, rssi):
-        '''
-        Normalize RSSI value between 0 and 1.
-        '''
-        normalized = (rssi - (-124)) / (-0 - (-124))  # Assuming RSSI range -124 dBm to 0 dBm
-        normalized = min(max(normalized, 0.0), 1.0)  # Clamp between 0 and 1
-        return 1.0 - normalized  # Lower RSSI (farther away) means higher overhead
 
     def log(self, msg):
         print(f"Node {str(self.node_id[12:]):6}[{self.now}] {msg}")
