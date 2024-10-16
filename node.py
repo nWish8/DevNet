@@ -9,8 +9,8 @@ import BME280
 import utelnetserver
 
 GATEWAY_MAC = 'e8:31:cd:70:f1:6c'  # Gateway MAC address
-INTERVAL = 20  # Increased to allow time for replies
-REPLY_TIMEOUT = 15  # Should be less than INTERVAL
+INTERVAL = 10  # Increased to allow time for replies
+REPLY_TIMEOUT = 8  # Should be less than INTERVAL
 DELAY = 2  # Delay for reading GPS data
 WEIGHT = 0.5  # Weight for calculating overhead (battery level and RSSI)
 
@@ -81,7 +81,6 @@ class MyNode:
             self.log("ADC initialized for battery level monitoring.")
         except Exception as e:
             self.log(f"Error initializing ADC: {str(e)}")
-            self.adc = None
 
         # Initialize GSM module only on the gateway node
         if self.node_id == GATEWAY_MAC:
@@ -109,13 +108,13 @@ class MyNode:
         else:
             self.gsm_uart = None  # GSM module not present on other nodes
 
-        #self.update_gps()  # Fetch GPS data for the first time
+        self.update_gps()  # Fetch GPS data for the first time
 
-        self.gps_flag = False  # Flag to indicate GPS data availability
-        while not self.gps_flag:
-            self.update_gps()
+        # self.gps_flag = False  # Flag to indicate GPS data availability
+        # while not self.gps_flag:
+        #     self.update_gps()
 
-        self.start_dreq = True
+        self.start_seq = True
         self.reply_flag = False
         self.reply_deadline = None  # Initialize reply deadline
         self.last_request_time = 0  # Store the time when the request was sent
@@ -124,6 +123,8 @@ class MyNode:
         self.hop_count = 0 # Hop count to the gateway
         self.battery_level = 0.0
         self.rssi = 0.0
+        self.apparent_battery = 0
+        self.apparent_rssi = 0.0
         self.overhead = 0.0
         self.path = GATEWAY_MAC  # Path to the gateway
         self.clock_offset = 0  # Clock offset for synchronization
@@ -135,12 +136,12 @@ class MyNode:
         '''Main loop for node'''
 
         while True:
-            if self.node_id == GATEWAY_MAC and self.start_dreq:
+            if self.node_id == GATEWAY_MAC and self.start_seq:
                 self.log("STARTING...")
                 utime.sleep(1)
                 self.send_dreq()
                 self.latency = utime.ticks_ms()
-                self.start_dreq = False
+                self.start_seq = False
                 self.reply_flag = False
                 self.last_request_time = utime.time()
 
@@ -158,12 +159,12 @@ class MyNode:
                 pass
 
             # Check if time since request exceeds REPLY_TIMEOUT seconds and no reply received
-            if not self.reply_flag and self.node_id == GATEWAY_MAC and not self.start_dreq:
+            if not self.reply_flag and self.node_id == GATEWAY_MAC and not self.start_seq:
                 current_time = utime.time()
                 if current_time - self.last_request_time > REPLY_TIMEOUT:
                     self.log(f"No reply received after {REPLY_TIMEOUT} seconds.")
                     self.start_flag = True
-                    self.start_dreq = True
+                    self.start_seq = True
 
             self.start_reply()
 
@@ -177,8 +178,8 @@ class MyNode:
         data = {
             'msg': 'dreq',
             'tx_counter': self.tx_counter,
-            'battery_level': self.battery_level,
-            'rssi': self.rssi,
+            'battery_level': self.apparent_battery,
+            'rssi': self.apparent_rssi,
             'overhead': self.overhead,
             'path': self.path,
             'clock': self.now
@@ -267,7 +268,14 @@ class MyNode:
                     utime.sleep(self.rand_delay())  # Wait for a random delay
                     self.send_dreply()  # Send the data packet to the next node
                 else:  # Data has reached the gateway
-                    self.log_data()  # Log the collected data
+                    self.log_data() # Log the data
+                    self.log(f"DATA:\n" + self.init_data_cache())
+                    self.log(f"COMPLETE")
+                    self.tx_counter += 1
+                    self.start_seq = True
+                    self.neighbor_table = {} # Reset the Gateway neighbor table
+                    self.data_cache = {} # Reset the data cache
+                    utime.sleep(INTERVAL)
                 self.start_flag = False
                 self.reply_deadline = None  # Reset the reply deadline
             else:
@@ -295,15 +303,21 @@ class MyNode:
         '''
         Calculate the overhead based on battery level and RSSI.
         '''
-        mac_bytes = bytes(int(b, 16) for b in sender_mac.split(':'))
-
         # Parse the battery and RSSI values as floats
         recieved_apparent_battery = float(data['battery_level'])
         recieved_apparent_rssi = float(data['rssi'])
 
         # Apparent normalized battery level and RSSI
-        self.apparent_battery = self.read_battery_level() + recieved_apparent_battery
-        self.apparent_rssi = self.read_rssi(sender_mac) + recieved_apparent_rssi
+        # Normalize the battery voltage to a level between 0 and 1
+        # Assuming battery voltage ranges from 3.0V (0%) to 4.2V (100%)
+        battery_level = (self.read_battery_level() - 3.0) / (4.2 - 3.0)
+        battery_level = min(max(battery_level, 0.0), 1.0)  # Clamp between 0 and 1
+        self.apparent_battery = battery_level + recieved_apparent_battery
+
+        # Normalize the RSSI to a level between 0 and 1
+        # Assuming RSSI ranges from -124 (0%) to 0 (100%)
+        rssi = (self.read_rssi(sender_mac) - (-124)) / (0 - (-124))
+        self.apparent_rssi = rssi + recieved_apparent_rssi
 
         # Calculate and return the overhead
         overhead = round(WEIGHT * self.apparent_battery + (1 - WEIGHT) * -1*self.apparent_rssi,3)
@@ -316,6 +330,8 @@ class MyNode:
             self.neighbor_table = {}
             self.battery_level = 0.0
             self.rssi = 0.0
+            self.apparent_battery = 0
+            self.apparent_rssi = 0.0
             self.overhead = 0.0
             self.path = GATEWAY_MAC
             self.start_flag = False
@@ -347,7 +363,7 @@ class MyNode:
 
         try:
             self.esp.add_peer(mac_bytes)  # Attempt to add the peer
-            self.log(f"Added peer {sender_mac}")
+            #self.log(f"Added peer {sender_mac}")
         except OSError as e:
             if e.args[0] == -12395:  # ESP_ERR_ESPNOW_EXIST
                 pass  # Peer already exists, no action needed
@@ -380,7 +396,7 @@ class MyNode:
         battery_level = self.read_battery_level()
 
         # Read RSSI value
-        rssi = self.read_rssi()
+        rssi = self.read_rssi(self.path)
 
         self.data_cache[str(self.node_id)] = {
             'time': self.now,
@@ -478,7 +494,7 @@ class MyNode:
                     num_satellites = int(parts[7])
                     hdop = float(parts[8]) if parts[8] else float('inf')  # Horizontal Dilution of Precision
 
-                    self.log(f"GGA - Lat: {latitude}, Lon: {longitude}, Fix: {fix_quality}, Satellites: {num_satellites}, HDOP: {hdop}")
+                    #self.log(f"GGA - Lat: {latitude}, Lon: {longitude}, Fix: {fix_quality}, Satellites: {num_satellites}, HDOP: {hdop}")
 
                     # Only consider valid fixes
                     if fix_quality > 0 and hdop < best_hdop:
@@ -502,7 +518,7 @@ class MyNode:
                     latitude = self.convert_to_degrees(parts[3], parts[4])
                     longitude = self.convert_to_degrees(parts[5], parts[6])
 
-                    self.log(f"RMC - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
+                    #self.log(f"RMC - Lat: {latitude}, Lon: {longitude}, Fix: {fix_status}")
 
                     # Extract GPS time (UTC) from RMC sentence
                     gps_time = parts[1]  # hhmmss.sss format
@@ -524,7 +540,7 @@ class MyNode:
                         # Store GPS time for PPS synchronization
                         self.gps_time = (year, month, day, hours, minutes, seconds)
 
-                        self.log(f"System time updated from GPS: {hours:02}:{minutes:02}:{seconds:02} on {day:02}/{month:02}/{year}")
+                        #self.log(f"System time updated from GPS: {hours:02}:{minutes:02}:{seconds:02} on {day:02}/{month:02}/{year}")
 
                     # Consider RMC data if it's valid and there's no better GGA fix
                     if fix_status == 'A' and best_fix is None:
@@ -542,8 +558,8 @@ class MyNode:
         # Use the best fix if found
         if best_fix:
             self.gps_flag = True
-            self.position = (best_fix['latitude'], best_fix['longitude'])
-            self.log(f"Best position acquired: Latitude = {best_fix['latitude']}, Longitude = {best_fix['longitude']}, Fix Quality = {best_fix['fix_quality']}, Satellites = {best_fix['num_satellites']}, HDOP = {best_fix['hdop']}")
+            self.position = [best_fix['latitude'], best_fix['longitude']]
+            self.log(f"GPS fix acquired: Latitude = {best_fix['latitude']}, Longitude = {best_fix['longitude']}, Fix Quality = {best_fix['fix_quality']}, Satellites = {best_fix['num_satellites']}, HDOP = {best_fix['hdop']}")
         else:
             self.gps_flag = False
             self.position = [0.0, 0.0]
@@ -587,37 +603,32 @@ class MyNode:
         '''
         Read the battery level from an ADC pin.
         '''
-        if self.adc:
-            raw_value = self.adc.read()
-            voltage_divider_factor = (33+82)/81  # Voltage divider factor based on resistor values
+        raw_value = 0
+        for _ in range(10):
+            raw_value += self.adc.read()
+        raw_value /= 10
 
-            v_ref = 3.3  # Reference voltage of the ADC
+        #self.log(f"Raw ADC value: {raw_value}")
 
-            # Convert ADC reading to voltage
-            v_adc = (raw_value / 4095.0) * v_ref
+        v_ref = (3.3/4096.0) * ((33+82)/82) 
 
-            # Calculate the actual battery voltage
-            battery_voltage = v_adc * voltage_divider_factor
+        # Calculate the actual battery voltage
+        self.battery_level = raw_value * v_ref
 
-            # Normalize the battery voltage to a level between 0 and 1
-            # Assuming battery voltage ranges from 3.0V (0%) to 4.2V (100%)
-            battery_level = (battery_voltage - 3.0) / (4.2 - 3.0)
-            battery_level = min(max(battery_level, 0.0), 1.0)  # Clamp between 0 and 1
+        return self.battery_level
 
-            return battery_level
-        else:
-            return 0.0
-
-    def read_rssi(self, mac_bytes=None):
+    def read_rssi(self, sender_mac):
         '''
         Read the RSSI value for a specific MAC address or the connected Wi-Fi network.
         '''
+        mac_bytes = bytes(int(b, 16) for b in sender_mac.split(':'))
+
         if mac_bytes and mac_bytes in self.esp.peers_table:
-            rssi = self.esp.peers_table[mac_bytes][0]  # RSSI value
+            self.rssi = self.esp.peers_table[mac_bytes][0]  # RSSI value
         else:
-            rssi = self.sta.status('rssi')  # RSSI of connected Wi-Fi network
-        self.log(f"RSSI: {rssi}")
-        return rssi
+            self.rssi = self.sta.status('rssi')  # RSSI of connected Wi-Fi network
+
+        return self.rssi
 
     def log(self, msg):
         print(f"Node {str(self.node_id[12:]):6}[{self.now}] {msg}")
@@ -643,7 +654,7 @@ class MyNode:
             
             with open(latency_filename, mode) as f:
                 f.write(data_string)
-            self.log(f"Latency data written to {latency_filename}")
+            #self.log(f"Latency data written to {latency_filename}")
         except Exception as e:
             self.log(f"Error writing latency data to file: {str(e)}")
         
@@ -661,7 +672,7 @@ class MyNode:
             
             with open(data_filename, mode) as f:
                 f.write(data_string + '\n')
-            self.log(f"Data written to {data_filename}")
+            #self.log(f"Data written to {data_filename}")
         except Exception as e:
             self.log(f"Error writing data to file: {str(e)}")
 
@@ -676,13 +687,13 @@ class MyNode:
         formatted_cache.append(header)
         
         for id, data in self.data_cache.items():
-            pos_x, pos_y = data['pos']  # Unpack position into x and y
+            pos_x, pos_y = data['position']  # Unpack position into x and y
             formatted_data = (
                 f"{self.tx_counter}," +
-                f"{data['time']:.2f}," +           # Time formatted to 2 decimal places
+                f"{data['time']}," +           # Time formatted to 2 decimal places
                 f"{id}," +
-                f"{pos_x:.2f}," +                  # Position X
-                f"{pos_y:.2f}," +                  # Position Y
+                f"{pos_x}," +                  # Position X
+                f"{pos_y}," +                  # Position Y
                 f"{data['temperature']:.2f}," +
                 f"{data['humidity']:.2f}," +
                 f"{data['pressure']:.2f}," +
@@ -701,13 +712,13 @@ class MyNode:
         formatted_cache = []
         
         for id, data in self.data_cache.items():
-            pos_x, pos_y = data['pos']  # Unpack position into x and y
+            pos_x, pos_y = data['position']  # Unpack position into x and y
             formatted_data = (
                 f"{self.tx_counter}," +
-                f"{data['time']:.2f}," +
+                f"{data['time']}," +
                 f"{id}," +
-                f"{pos_x:.2f}," +
-                f"{pos_y:.2f}," +
+                f"{pos_x}," +
+                f"{pos_y}," +
                 f"{data['temperature']:.2f}," +
                 f"{data['humidity']:.2f}," +
                 f"{data['pressure']:.2f}," +
@@ -727,30 +738,30 @@ class MyNode:
         header = (
             f"Data Log:\n" +
             f"{'Tx':<4}" +
-            f"{'Time':<9}" +
-            f"{'MAC':<9}" +
+            f"{'Time':<11}" +
+            f"{'MAC':<15}" +
             f"{'Position':<22}" +
             f"{'Temp':<8}" +
             f"{'Hum':<8}" +
-            f"{'Pres':<8}" +
-            f"{'Batt':<8}" +
-            f"{'RSSI':<8}" +
+            f"{'Pressure':<12}" +
+            f"{'Batt(V)':<8}" +
+            f"{'RSSI':<6}" +
             f"{'HopCount':<6}"
         )
         formatted_cache.append(header)
         formatted_cache.append('-' * 100)  # Divider line
 
-        for id, data in self.data_cache.items():
+        for node_id, data in self.data_cache.items():
             formatted_data = (
                 f"{self.tx_counter:<4}" +
-                f"{round(data['time'],3):<9.2f}" +
-                f"{str(id):<9}" +
-                f"{str(data['pos']):<22}" +
+                f"{data['time']:<11}" +
+                f"{node_id[12:]:<15}" +
+                f"{str(data['position']):<22}" +
                 f"{data['temperature']:<8.2f}" +
                 f"{data['humidity']:<8.2f}" +
-                f"{data['pressure']:<8}" +
-                f"{data['battery_level']:<8.1f}" +  # Display battery level as percentage
-                f"{data['rssi']:<8.1f}" +
+                f"{data['pressure']:<12.2f}" +
+                f"{data['battery_level']:<8.1f}" +
+                f"{data['rssi']:<6}" +
                 f"{data['hop_count']:<6}"
             )
             formatted_cache.append(formatted_data)

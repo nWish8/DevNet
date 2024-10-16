@@ -3,6 +3,10 @@
 		{
 			"name": "DevNet",
 			"path": "."
+		},
+		{
+			"name": "serial:/COM16",
+			"uri": "serial://com16/"
 		}
 	],
 	"settings": {
