@@ -163,7 +163,7 @@ class MyNode:
 
             self.start_reply()
 
-            utime.sleep(0.1)  # Small delay to prevent tight loop
+            #utime.sleep(0.1)  # Small delay to prevent tight loop
 
     def send_dreq(self):
         '''
@@ -826,9 +826,9 @@ class MyNode:
 
     def rand_delay(self):
         '''
-        Returns a random delay between 0.2 and 2.0 seconds.
+        Returns a random delay between 0.2 and 0.8 seconds.
         '''
-        return random.uniform(0.2, 2.0)
+        return random.uniform(0.2, 0.8)
 
 ###########################################################
 if __name__ == "__main__":
