@@ -291,65 +291,6 @@ class MyNode:
                 self.start_flag = False
                 self.reply_deadline = None  # Reset the deadline
 
-    def log_data(self):
-        '''Log the collected data'''
-        
-        # Calcualte latency in seconds
-        self.latency = utime.ticks_diff(utime.ticks_ms(), self.latency) / 1000
-        
-        # Add data to the log file
-        filename = 'latency.txt'
-        try:
-            if self.tx_counter == 0:
-                # Overwrite the file if tx_counter is 0
-                mode = 'w'
-                data_string = self.init_latency()
-
-            else:
-                # Append to the file if tx_counter is not 0
-                mode = 'a'
-                data_string = self.format_latency()
-            
-            with open(filename, mode) as f:
-                f.write(data_string)
-            self.log(f"Data written to {filename}")
-        except Exception as e:
-            self.log(f"Error writing data to file: {str(e)}")
-
-
-        # Add data to the log file
-        filename = 'data_log.txt'
-        try:
-            if self.tx_counter == 0:
-                # Overwrite the file if tx_counter is 0
-                mode = 'w'
-                data_string = self.init_data_cache()
-
-            else:
-                # Append to the file if tx_counter is not 0
-                mode = 'a'
-                data_string = self.format_data_cache()
-            
-            with open(filename, mode) as f:
-                f.write(data_string + '\n')
-            self.log(f"Data written to {filename}")
-        except Exception as e:
-            self.log(f"Error writing data to file: {str(e)}")
-
-        
-        self.log(f"DATA:\n" + self.init_data_cache())
-
-        # Send data over GSM module
-        # self.send_data_over_gsm(self.format_data_cache())
-
-        self.log("COMPLETE")
-        self.start_dreq = True
-        self.tx_counter += 1
-        self.neighbor_table = {}  # Reset the gateway neighbor table
-        self.data_cache = {}  # Reset data cache
-
-        utime.sleep(INTERVAL)  # Wait for INTERVAL seconds before sending the next DREQ message
-
     def lowest_overhead_neighbor(self):
         '''
         Returns the neighbor with the lowest overhead.
@@ -697,41 +638,103 @@ class MyNode:
     def log(self, msg):
         print(f"Node {str(self.node_id[12:]):6}[{self.now}] {msg}")
 
-    def init_latency(self):
+    def log_data(self):
+        '''Log the collected data'''
+        
+        # Calcualte latency in seconds
+        self.latency = utime.ticks_diff(utime.ticks_ms(), self.latency) / 1000
+        
+        # Add data to the log file
+        latency_filename = 'latency.csv'
+        try:
+            if self.tx_counter == 0:
+                # Overwrite the file if tx_counter is 0
+                mode = 'w'
+                data_string = "Tx,Latency\n"
+                data_string += f"{self.tx_counter},{self.latency:.2f}\n"
+            else:
+                # Append to the file if tx_counter is not 0
+                mode = 'a'
+                data_string = f"{self.tx_counter},{self.latency:.2f}\n"
+            
+            with open(latency_filename, mode) as f:
+                f.write(data_string)
+            self.log(f"Latency data written to {latency_filename}")
+        except Exception as e:
+            self.log(f"Error writing latency data to file: {str(e)}")
+        
+        # Write data cache to CSV file
+        data_filename = 'data_log_SIM.csv'
+        try:
+            if self.tx_counter == 0:
+                # Overwrite the file if tx_counter is 0
+                mode = 'w'
+                data_string = self.init_csv_data_cache()
+            else:
+                # Append to the file if tx_counter is not 0
+                mode = 'a'
+                data_string = self.format_csv_data_cache()
+            
+            with open(data_filename, mode) as f:
+                f.write(data_string + '\n')
+            self.log(f"Data written to {data_filename}")
+        except Exception as e:
+            self.log(f"Error writing data to file: {str(e)}")
+
+    def init_csv_data_cache(self):
         '''
-        Returns a formatted string representation 
+        Returns a formatted string representation of the data cache in CSV format.
         '''
         formatted_cache = []
         header = (
-            f"Latency Log:\n" +
-            f"{'Tx':<4}" +
-            f"{'Time':<9}"
+            f"Tx,Time,MAC,PosX,PosY,Temp,Hum,Pres,Batt,RSSI,HopCount"
         )
         formatted_cache.append(header)
-        formatted_cache.append('-' * 100)  # Divider line
-
-        formatted_data = (
-            f"{self.tx_counter:<4}" +
-            f"{self.latency:<9}" 
-        )
-        formatted_cache.append(formatted_data)
-
+        
+        for id, data in self.data_cache.items():
+            pos_x, pos_y = data['pos']  # Unpack position into x and y
+            formatted_data = (
+                f"{self.tx_counter}," +
+                f"{data['time']:.2f}," +           # Time formatted to 2 decimal places
+                f"{id}," +
+                f"{pos_x:.2f}," +                  # Position X
+                f"{pos_y:.2f}," +                  # Position Y
+                f"{data['temperature']:.2f}," +
+                f"{data['humidity']:.2f}," +
+                f"{data['pressure']:.2f}," +
+                f"{data['battery_level']:.1f}," +  # Assuming battery level is already a percentage
+                f"{data['rssi']:.1f}," +
+                f"{data['hop_count']}"
+            )
+            formatted_cache.append(formatted_data)
+        
         return "\n".join(formatted_cache)
 
-    def format_latency(self):
+    def format_csv_data_cache(self):
         '''
-        Returns a formatted string representation of the data cache with aligned columns.
+        Returns a formatted string representation of the data cache in CSV format.
         '''
         formatted_cache = []
-
-        formatted_data = (f"\n" +  
-            f"{self.tx_counter:<4}" +
-            f"{self.latency:<9}" 
-        )
-        formatted_cache.append(formatted_data)
-
+        
+        for id, data in self.data_cache.items():
+            pos_x, pos_y = data['pos']  # Unpack position into x and y
+            formatted_data = (
+                f"{self.tx_counter}," +
+                f"{data['time']:.2f}," +
+                f"{id}," +
+                f"{pos_x:.2f}," +
+                f"{pos_y:.2f}," +
+                f"{data['temperature']:.2f}," +
+                f"{data['humidity']:.2f}," +
+                f"{data['pressure']:.2f}," +
+                f"{data['battery_level']:.1f}," +
+                f"{data['rssi']:.1f}," +
+                f"{data['hop_count']}"
+            )
+            formatted_cache.append(formatted_data)
+        
         return "\n".join(formatted_cache)
-
+    
     def init_data_cache(self):
         '''
         Returns a formatted string representation of the data cache with aligned columns.
@@ -741,52 +744,29 @@ class MyNode:
             f"Data Log:\n" +
             f"{'Tx':<4}" +
             f"{'Time':<9}" +
-            f"{'MAC':<15}" +
+            f"{'MAC':<9}" +
             f"{'Position':<22}" +
             f"{'Temp':<8}" +
             f"{'Hum':<8}" +
-            f"{'Pressure':<12}" +
-            f"{'Batt':<6}" +
-            f"{'RSSI':<6}" +
+            f"{'Pres':<8}" +
+            f"{'Batt':<8}" +
+            f"{'RSSI':<8}" +
             f"{'HopCount':<6}"
         )
         formatted_cache.append(header)
         formatted_cache.append('-' * 100)  # Divider line
 
-        for node_id, data in self.data_cache.items():
+        for id, data in self.data_cache.items():
             formatted_data = (
                 f"{self.tx_counter:<4}" +
-                f"{data['time']:<9}" +
-                f"{node_id[12:]:<15}" +
-                f"{str(data['position']):<22}" +
+                f"{round(data['time'],3):<9.2f}" +
+                f"{str(id):<9}" +
+                f"{str(data['pos']):<22}" +
                 f"{data['temperature']:<8.2f}" +
                 f"{data['humidity']:<8.2f}" +
-                f"{data['pressure']:<12.2f}" +
-                f"{data['battery_level'] * 100:<6.1f}" +  # Display battery level as percentage
-                f"{data['rssi']:<6}" +
-                f"{data['hop_count']:<6}"
-            )
-            formatted_cache.append(formatted_data)
-
-        return "\n".join(formatted_cache)
-
-    def format_data_cache(self):
-        '''
-        Returns a formatted string representation of the data cache with aligned columns.
-        '''
-        formatted_cache = []
-
-        for node_id, data in self.data_cache.items():
-            formatted_data = (
-                f"{self.tx_counter:<4}" +
-                f"{data['time']:<9}" +
-                f"{node_id[12:]:<15}" +
-                f"{str(data['position']):<22}" +
-                f"{data['temperature']:<8.2f}" +
-                f"{data['humidity']:<8.2f}" +
-                f"{data['pressure']:<12.2f}" +
-                f"{data['battery_level'] * 100:<6.1f}" +  # Display battery level as percentage
-                f"{data['rssi']:<6}" +
+                f"{data['pressure']:<8}" +
+                f"{data['battery_level']:<8.1f}" +  # Display battery level as percentage
+                f"{data['rssi']:<8.1f}" +
                 f"{data['hop_count']:<6}"
             )
             formatted_cache.append(formatted_data)
