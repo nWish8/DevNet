@@ -157,11 +157,11 @@ class MyNode:
             except OSError:
                 pass
 
-            # Check if time since request exceeds REPLY_TIMEOUT + 5 seconds and no reply received
+            # Check if time since request exceeds REPLY_TIMEOUT seconds and no reply received
             if not self.reply_flag and self.node_id == GATEWAY_MAC and not self.start_dreq:
                 current_time = utime.time()
-                if current_time - self.last_request_time > REPLY_TIMEOUT + 5:
-                    self.log(f"No reply received after {REPLY_TIMEOUT + 5} seconds.")
+                if current_time - self.last_request_time > REPLY_TIMEOUT:
+                    self.log(f"No reply received after {REPLY_TIMEOUT} seconds.")
                     self.start_flag = True
                     self.start_dreq = True
 
