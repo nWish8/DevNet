@@ -366,16 +366,12 @@ class MyNode:
         received_battery = float(data['battery_level'])
         received_rssi = float(data['rssi'])
 
-        # Read actual battery level and RSSI
-        self.battery_level = self.read_battery_level() + received_battery
-        self.rssi = self.read_rssi(mac_bytes) + received_rssi
-
-        # Normalize the values
-        normalized_battery = self.normalize_battery(self.battery_level)
-        normalized_rssi = self.normalize_rssi(self.rssi)
+        # Apparent normalized battery level and RSSI
+        self.battery_level = self.normalize_battery(self.read_battery_level()) + received_battery
+        self.rssi = self.normalize_rssi(self.read_rssi(mac_bytes)) + received_rssi
 
         # Calculate and return the overhead
-        overhead = WEIGHT * normalized_battery + (1 - WEIGHT) * normalized_rssi
+        overhead = WEIGHT * self.battery_level + (1 - WEIGHT) * self.rssi
         return overhead
 
     def is_edge_node(self):
@@ -686,13 +682,15 @@ class MyNode:
         '''
         Normalize the battery level between 0 and 1.
         '''
+        normalized = (battery_level - (100)) / (0 - (100))  # Assuming battery range 100 to 0 
+        normalized = min(max(normalized, 0.0), 1.0)  # Clamp between 0 and 1
         return 1.0 - battery_level  # Lower battery level means higher overhead
 
     def normalize_rssi(self, rssi):
         '''
         Normalize RSSI value between 0 and 1.
         '''
-        normalized = (rssi - (-124)) / (-0 - (-124))  # Assuming RSSI range -100 dBm to -50 dBm
+        normalized = (rssi - (-124)) / (-0 - (-124))  # Assuming RSSI range -124 dBm to 0 dBm
         normalized = min(max(normalized, 0.0), 1.0)  # Clamp between 0 and 1
         return 1.0 - normalized  # Lower RSSI (farther away) means higher overhead
 
