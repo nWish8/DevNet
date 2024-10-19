@@ -8,10 +8,11 @@ from machine import SoftI2C, Pin, UART, RTC, ADC
 import BME280
 import utelnetserver
 
+TX_POWER = 20  # Maximum TX power for ESP32
 GATEWAY_MAC = 'e8:31:cd:70:f1:6c'  # Gateway MAC address
-INTERVAL = 10  # Increased to allow time for replies
+INTERVAL = 10  # Interval for sending data (in seconds)
 REPLY_TIMEOUT = 8  # Should be less than INTERVAL
-DELAY = 2  # Delay for reading GPS data
+DELAY = 1  # Delay for reading GPS data
 WEIGHT = 0.5  # Weight for calculating overhead (battery level and RSSI)
 
 ###########################################################
@@ -33,7 +34,7 @@ class MyNode:
         password = config.WIFI_PASSWORD
 
         # Initialize WLAN
-        self.sta = network.WLAN(network.STA_IF)
+        self.sta = network.WLAN(network.STA_IF).config(tx_power=TX_POWER)  # Set TX power to maximum
         self.sta.active(True)
         self.sta.connect(ssid, password)
 
@@ -239,6 +240,10 @@ class MyNode:
                         if self.node_id != GATEWAY_MAC:
                             self.path = sender_mac  # Update self.path
                             self.overhead = self.calculate_overhead(sender_mac, data) + data['overhead']  # Update node overhead
+                            # delete all peers except the broadcast address
+                            for peer in self.esp.peers_table:
+                                if peer != self.broadcast_mac or peer != sender_mac:
+                                    self.esp.remove_peer(peer)
                             utime.sleep(self.rand_delay())
                             self.send_dreq()  # Forward the DREQ message
                         self.start_flag = True  # Set the start flag to True
@@ -697,7 +702,7 @@ class MyNode:
                 f"{data['temperature']:.2f}," +
                 f"{data['humidity']:.2f}," +
                 f"{data['pressure']:.2f}," +
-                f"{data['battery_level']:.1f}," +  # Assuming battery level is already a percentage
+                f"{data['battery_level']:.3f}," +  # Assuming battery level is already a percentage
                 f"{data['rssi']:.1f}," +
                 f"{data['hop_count']}"
             )
@@ -722,7 +727,7 @@ class MyNode:
                 f"{data['temperature']:.2f}," +
                 f"{data['humidity']:.2f}," +
                 f"{data['pressure']:.2f}," +
-                f"{data['battery_level']:.1f}," +
+                f"{data['battery_level']:.3f}," +
                 f"{data['rssi']:.1f}," +
                 f"{data['hop_count']}"
             )
@@ -760,7 +765,7 @@ class MyNode:
                 f"{data['temperature']:<8.2f}" +
                 f"{data['humidity']:<8.2f}" +
                 f"{data['pressure']:<12.2f}" +
-                f"{data['battery_level']:<8.1f}" +
+                f"{data['battery_level']:<8.3f}" +
                 f"{data['rssi']:<6}" +
                 f"{data['hop_count']:<6}"
             )
